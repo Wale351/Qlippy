@@ -291,11 +291,19 @@ async def _craft_one(
     mh_count, sig_count = sum(mh_ticks.values()), sum(sig_ticks.values())
 
     label = classify(mh_count, sig_count)
+
+    # Local-model calibration:
+    # Hero should be rare. Require both a perfect Crafter checklist
+    # and a very strong Scout score.
+    if label == "hero" and candidate.get("score", 0) < 85:
+        label = "strong"
+
     if label is None:
         return _fallback_clip(candidate, sentences, features,
                               f"Crafter: only {mh_count} of {len(MUST_HAVES)} must-haves")
 
     duration = sum(c["end"] - c["start"] for c in cuts_raw)
+    was_expanded = False
 
     # Small local models sometimes identify the right moment but trim it down
     # to only a few seconds. Expand with nearby context instead of immediately
@@ -307,6 +315,7 @@ async def _craft_one(
         if expanded is not None:
             groups, cuts_raw, text = expanded
             duration = sum(c["end"] - c["start"] for c in cuts_raw)
+            was_expanded = True
             log.info(
                 "Crafter: candidate %s expanded to %.1fs",
                 candidate["candidate_id"], duration,
@@ -316,8 +325,31 @@ async def _craft_one(
         return _fallback_clip(candidate, sentences, features,
                               f"Crafter: {duration:.1f}s is outside your {int(gate_min)}–{int(gate_max)}s range")
 
+    # Expansion changed the exact clip after the LLM checklist was produced,
+    # so do not call the modified version Hero without re-evaluating it.
+    if was_expanded and label == "hero":
+        label = "strong"
+
     # Transplant only counts when the play order actually differs from source order
     transplant = transplant and groups != sorted(groups)
+
+    # Inspect the ACTUAL first sentence of the finished clip.
+    first_idx = groups[0][0] if groups else None
+    starts_with_host_question = False
+
+    if first_idx is not None and 0 <= first_idx < len(sentences):
+        first_feat = features[first_idx] if first_idx < len(features) else {}
+        first_speaker = first_feat.get("speaker")
+        first_text = sentences[first_idx].get("text", "").strip()
+
+        starts_with_host_question = (
+            roles.get(first_speaker) == "host"
+            and first_text.endswith("?")
+        )
+
+    # A host question may be useful setup, but it should not receive Hero status.
+    if starts_with_host_question and label == "hero":
+        label = "strong"
 
     return {
         "archetype":       candidate["archetype"],
@@ -332,6 +364,7 @@ async def _craft_one(
         "sentence_groups": groups,
         "stitched":        len(groups) > 1,
         "transplant":      transplant,
+        "host_question_open": starts_with_host_question,
         "cuts_raw":        cuts_raw,
         "duration_sec":    round(duration, 3),
         "src_start":       min(c["start"] for c in cuts_raw),

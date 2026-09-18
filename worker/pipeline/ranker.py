@@ -51,7 +51,10 @@ def _overlap_fraction(a: list[dict], b: list[dict]) -> float:
 def _fallback_order(clips: list[dict]) -> list[int]:
     return sorted(
         range(len(clips)),
-        key=lambda i: (clips[i]["score_total"], clips[i].get("scout_score", 0)),
+        key=lambda i: (
+            clips[i]["score_total"] - (2 if clips[i].get("host_question_open") else 0),
+            clips[i].get("scout_score", 0),
+        ),
         reverse=True,
     )
 
