@@ -274,6 +274,62 @@ def _expand_groups_to_min(
     return groups
 
 
+
+def _repair_awkward_opening(
+    groups: list[list[int]],
+    sentences: list[dict[str, Any]],
+) -> list[list[int]]:
+    """Add one sentence of prior context when a Moment clearly starts mid-thought."""
+    if not groups:
+        return groups
+
+    first_lo = groups[0][0]
+    if first_lo <= 0:
+        return groups
+
+    text = str(sentences[first_lo].get("text") or "").strip().lower()
+
+    continuation_starts = (
+        "and ",
+        "but ",
+        "so ",
+        "now ",
+        "then ",
+        "because ",
+        "which ",
+        "also ",
+        "i mean ",
+        "you know ",
+        "the thing is ",
+    )
+
+    if not text.startswith(continuation_starts):
+        return groups
+
+    prev = first_lo - 1
+    gap = (
+        float(sentences[first_lo]["start"])
+        - float(sentences[prev]["end"])
+    )
+
+    # A large pause usually means this really is a new thought.
+    if gap > 3.0:
+        return groups
+
+    candidate = [g[:] for g in groups]
+    candidate[0][0] = prev
+
+    if _groups_duration(candidate, sentences) > TARGET_MAX_S:
+        return groups
+
+    log.info(
+        "Moment opening repaired: prepended sentence %d before %d",
+        prev,
+        first_lo,
+    )
+    return candidate
+
+
 def _build_moment(
     scene_ids: list[int],
     topic: str,
@@ -311,6 +367,11 @@ def _build_moment(
         )
 
         sentence_groups = _expand_groups_to_min(
+            sentence_groups,
+            sentences,
+        )
+
+        sentence_groups = _repair_awkward_opening(
             sentence_groups,
             sentences,
         )

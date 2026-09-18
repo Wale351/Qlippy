@@ -16,8 +16,6 @@ from pathlib import Path
 
 # main.py reads these at import time — provide dummies before any import
 os.environ.setdefault("WORKER_SECRET", "test")
-os.environ.setdefault("OPENROUTER_API_KEY", "test")
-os.environ.setdefault("REPLICATE_API_TOKEN", "test")
 
 import numpy as np
 
@@ -830,22 +828,13 @@ def test_main_export_concurrency_semaphore():
     assert asyncio.run(_probe()) is True   # semaphore acquirable and releases cleanly
 
 
-def test_main_replicate_poll_timeout_scales_with_duration():
-    from jobs.transcribe import _replicate_poll_timeout
-    assert _replicate_poll_timeout(None) == 1800.0          # unknown duration → base
-    assert _replicate_poll_timeout(0) == 1800.0
-    assert _replicate_poll_timeout(3600) == 1800.0          # 1h content → base still covers it
-    assert _replicate_poll_timeout(4 * 3600) == 4320.0      # 4h → 72 min
-    assert _replicate_poll_timeout(10 * 3600) == 10800.0    # 10h → capped at 3h
-    assert _replicate_poll_timeout(50 * 3600) == 10800.0    # cap holds
-
 
 def test_main_transcribe_error_messages():
     from jobs.transcribe import _transcribe_error_msg
     assert "Could not download" in _transcribe_error_msg(RuntimeError("yt-dlp failed: 403"))
     assert "empty" in _transcribe_error_msg(RuntimeError("produced an empty file")).lower()
     assert "Audio extraction" in _transcribe_error_msg(RuntimeError("ffmpeg audio extract failed"))
-    assert "service error" in _transcribe_error_msg(RuntimeError("Replicate failed: boom"))
+    assert "service error" in _transcribe_error_msg(RuntimeError("Whisper failed: boom"))
     assert _transcribe_error_msg(ValueError("weird")).startswith("Transcription failed")
 
 
@@ -1196,10 +1185,10 @@ def test_missing_env_lists_every_absent_var():
     import config
     with mock.patch.dict(config.os.environ, {k: "x" for k in config.REQUIRED_ENV}, clear=False):
         assert config.missing_env() == []
-    partial = {k: "x" for k in config.REQUIRED_ENV if k not in ("SUPABASE_URL", "REPLICATE_API_TOKEN")}
-    partial.update({"SUPABASE_URL": "", "REPLICATE_API_TOKEN": ""})
+    partial = {k: "x" for k in config.REQUIRED_ENV if k != "SUPABASE_URL"}
+    partial.update({"SUPABASE_URL": ""})
     with mock.patch.dict(config.os.environ, partial, clear=False):
-        assert config.missing_env() == ["SUPABASE_URL", "REPLICATE_API_TOKEN"]
+        assert config.missing_env() == ["SUPABASE_URL"]
 
 
 def test_missing_binaries_reports_only_absent_ones():
@@ -1298,10 +1287,16 @@ def test_ytdlp_runs_as_module_of_this_interpreter():
 
 def test_ytdlp_cookies_args():
     import sources
-    old = os.environ.pop("YT_COOKIES_B64", None)
+    old_b64 = os.environ.pop("YT_COOKIES_B64", None)
+    old_browser = os.environ.pop("YT_COOKIES_FROM_BROWSER", None)
     sources._yt_cookies_path = None
+
     try:
         assert sources.ytdlp_cookies_args() == []
+
+        os.environ["YT_COOKIES_FROM_BROWSER"] = "safari"
+        assert sources.ytdlp_cookies_args() == ["--cookies-from-browser", "safari"]
+        os.environ.pop("YT_COOKIES_FROM_BROWSER", None)
 
         cookies_content = b"# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tFALSE\t0\tNAME\tVALUE\n"
         os.environ["YT_COOKIES_B64"] = base64.b64encode(cookies_content).decode()
@@ -1311,8 +1306,13 @@ def test_ytdlp_cookies_args():
         os.unlink(args[1])
     finally:
         os.environ.pop("YT_COOKIES_B64", None)
-        if old is not None:
-            os.environ["YT_COOKIES_B64"] = old
+        os.environ.pop("YT_COOKIES_FROM_BROWSER", None)
+
+        if old_b64 is not None:
+            os.environ["YT_COOKIES_B64"] = old_b64
+        if old_browser is not None:
+            os.environ["YT_COOKIES_FROM_BROWSER"] = old_browser
+
         sources._yt_cookies_path = None
 
 

@@ -128,7 +128,14 @@ async def scout_moments(
     context = context or {}
     system = SYSTEM_PROMPT.format(tone_hint=_tone_hint(context))
     title = context.get("title") or ""
-    chunks = chunk_sentence_ranges(sentences)
+    # Local 4B models are much more reliable on smaller Scout windows.
+    # Aim for ~10-minute chunks and avoid feeding >12 minutes in one call.
+    chunks = chunk_sentence_ranges(
+        sentences,
+        target_s=600.0,
+        single_call_max_s=720.0,
+        max_sentences=180,
+    )
     sem = asyncio.Semaphore(MAX_PARALLEL_CHUNKS)
 
     async def _one(lo0: int, hi0: int) -> list[dict[str, Any]]:
@@ -147,7 +154,40 @@ async def scout_moments(
                 # One bad chunk must not sink a long job — skip it and keep going
                 log.warning("Scout chunk %d-%d failed: %s", lo0, hi0, e)
                 return []
-        return _validate_moments(data, lo0, hi0)
+
+            moments = _validate_moments(data, lo0, hi0)
+
+            # Long conversational chunks should rarely contain literally zero
+            # clip-worthy moments. Treat an empty-but-valid JSON response as a
+            # weak model pass and retry once with a stronger recall instruction.
+            if not moments and (hi0 - lo0 + 1) >= 60:
+                log.warning(
+                    "Scout chunk %d-%d returned 0 candidates — retrying once",
+                    lo0, hi0,
+                )
+                retry_user = (
+                    user
+                    + "\n\nYour previous pass found zero moments. Re-scan carefully. "
+                      "This is long-form conversational content, so identify the strongest "
+                      "self-contained stories, opinions, explanations, funny exchanges, "
+                      "emotional beats, or practical insights. Include borderline candidates; "
+                      "downstream stages will filter them."
+                )
+                try:
+                    retry_data = await call_agent(
+                        "scout", system, retry_user,
+                        temperature=0.2, max_tokens=4096,
+                    )
+                    retry_moments = _validate_moments(retry_data, lo0, hi0)
+                    if retry_moments:
+                        moments = retry_moments
+                except Exception as e:
+                    log.warning(
+                        "Scout empty-result retry %d-%d failed: %s",
+                        lo0, hi0, e,
+                    )
+
+        return moments
 
     results = await asyncio.gather(*[_one(lo0, hi0) for lo0, hi0 in chunks])
 

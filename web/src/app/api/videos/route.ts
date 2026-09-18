@@ -9,7 +9,7 @@ export async function POST(req: NextRequest) {
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json();
-  const { youtube_url, model_size = "large", collection_id = null } = body;
+  const { youtube_url, model_size = "large", collection_id = null, resolution = 720 } = body;
   if (!youtube_url) return NextResponse.json({ error: "youtube_url required" }, { status: 400 });
 
   const youtubeId = extractYouTubeId(youtube_url);
@@ -67,6 +67,7 @@ export async function POST(req: NextRequest) {
         video_id:    video.id,
         youtube_url: youtube_url.trim(),
         model_size:  model_size,
+        resolution:  Number(resolution) || 720,
       },
     })
     .select()

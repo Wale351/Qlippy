@@ -129,37 +129,10 @@ def _extract_audio(source: str, out_path: str) -> None:
 
 
 def _run_diarization(audio_path: str) -> list[tuple[float, float, str]]:
-    """
-    Returns [(start_sec, end_sec, speaker_id), ...] sorted by start.
-    Falls back to [] when REPLICATE_API_TOKEN is not set or the call fails.
-    """
-    import replicate
+    """Run the local pyannote diarizer for portrait-analysis fallback."""
+    from .diarize import diarize_audio
 
-    api_token = os.environ.get("REPLICATE_API_TOKEN", "")
-    hf_token  = os.environ.get("HUGGINGFACE_TOKEN", "")
-    if not api_token:
-        log.warning("REPLICATE_API_TOKEN not set — skipping diarisation")
-        return []
-    if not hf_token:
-        log.warning("HUGGINGFACE_TOKEN not set — skipping diarisation")
-        return []
-
-    client = replicate.Client(api_token=api_token)
-    with open(audio_path, "rb") as f:
-        result = client.run(
-            "victor-upmeet/whisperx",
-            input={
-                "audio": f,
-                "diarization": True,
-                "huggingface_access_token": hf_token,
-                "min_speakers": 1,
-                "max_speakers": 4,
-            },
-        )
-
-    timeline: list[tuple[float, float, str]] = []
-    for seg in result.get("segments", []):
-        timeline.append((float(seg["start"]), float(seg["end"]), seg.get("speaker", "SPEAKER_00")))
+    timeline = diarize_audio(audio_path)
     return sorted(timeline, key=lambda x: x[0])
 
 
@@ -1142,7 +1115,7 @@ def _analyze_source(
     """
     Run Pass 1 with JSON cache. Returns timeline segments.
     If diar_timeline is provided (from the stored transcript) it is used directly
-    and no Replicate call is made. Falls back to a fresh WhisperX call only when
+    and no extra diarization pass is needed. Falls back to local pyannote only when
     the transcript has no speaker data (e.g. videos transcribed before diarisation
     was enabled).
     When analysis_out_path is set, also writes the per-frame scan (face boxes +
@@ -1171,7 +1144,7 @@ def _analyze_source(
         log.info("Using transcript speaker timeline (%d segments)", len(diar_timeline))
         diar = diar_timeline
     else:
-        # Fallback: call WhisperX separately (transcripts created before diarisation was enabled)
+        # Fallback: run local pyannote for transcripts created before diarisation was enabled
         audio_tmp = _mktemp(suffix=".wav")
         try:
             _extract_audio(source, audio_tmp)

@@ -17,7 +17,6 @@ load_dotenv()
 # Read leniently here so tests can import this module; main.py refuses to
 # start if any of REQUIRED_ENV is missing (see missing_env).
 WORKER_SECRET       = os.getenv("WORKER_SECRET", "")
-REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
 HUGGINGFACE_TOKEN   = os.getenv("HUGGINGFACE_TOKEN", "")  # required only for diarization
 
 # Model size → WhisperX model version tag

@@ -62,50 +62,15 @@ def _r2():
     return f"put+get+delete ok on bucket '{BUCKET}'"
 
 
-@check("Replicate API (auth)")
-def _replicate():
-    tok = os.environ["REPLICATE_API_TOKEN"]
-    r = httpx.get("https://api.replicate.com/v1/account",
-                  headers={"Authorization": f"Bearer {tok}"}, timeout=15)
+@check("Ollama local LLM")
+def _ollama():
+    r = httpx.get("http://127.0.0.1:11434/api/tags", timeout=10)
     r.raise_for_status()
-    return f"authed as {r.json().get('username','?')}"
-
-
-@check("OpenRouter API (auth + key limits)")
-def _openrouter():
-    key = os.environ["OPENROUTER_API_KEY"]
-    r = httpx.get("https://openrouter.ai/api/v1/key",
-                  headers={"Authorization": f"Bearer {key}"}, timeout=15)
-    r.raise_for_status()
-    d = r.json().get("data", {})
-    return f"usage={d.get('usage')} limit={d.get('limit')}"
-
-
-def _probe_model(model: str) -> str:
-    key = os.environ["OPENROUTER_API_KEY"]
-    r = httpx.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={"Authorization": f"Bearer {key}"},
-        json={"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 5},
-        timeout=30,
-    )
-    if r.status_code != 200:
-        return f"HTTP {r.status_code}: {r.text[:120]}"
-    body = r.json()
-    if body.get("error"):
-        return f"error: {body['error']}"
-    content = body.get("choices", [{}])[0].get("message", {}).get("content")
-    return "OK (content returned)" if content else f"EMPTY content; raw={json.dumps(body)[:160]}"
-
-
-@check("OpenRouter model: google/gemini-2.5-flash (DEFAULT)")
-def _m_default():
-    return _probe_model("google/gemini-2.5-flash")
-
-
-@check("OpenRouter model: openai/gpt-5.5 (erroring in logs)")
-def _m_gpt55():
-    return _probe_model("openai/gpt-5.5")
+    models = [
+        m.get("name", "")
+        for m in r.json().get("models", [])
+    ]
+    return "available models: " + ", ".join(models)
 
 
 def _ytdlp_probe(url: str) -> str:

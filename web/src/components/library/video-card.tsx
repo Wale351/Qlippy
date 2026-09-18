@@ -7,7 +7,6 @@ import { formatDuration } from "@/lib/youtube";
 import { Trash2, Loader2, RefreshCw, MoreVertical, FolderInput, Check } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import { Collection } from "@/lib/types";
-import { transcribingPct, identifyingPct } from "@/lib/processing-progress";
 import { Modal } from "@/components/ui/modal";
 import { Menu, MenuItem } from "@/components/ui/menu";
 
@@ -19,12 +18,34 @@ const STATUS_DOT: Record<VideoStatus, string> = {
   error:        "bg-red-500",
 };
 
-const STATUS_LABELS: Record<VideoStatus, string> = {
-  pending:      "Queued",
-  transcribing: "Analysing…",
-  identifying:  "Finding clips…",
-  ready:        "Ready",
-  error:        "Error",
+const STAGE_LABELS: Record<string, string> = {
+  preparing: "Preparing…",
+  downloading: "Downloading video…",
+  extracting_audio: "Extracting audio…",
+  transcribing_audio: "Transcribing audio…",
+  diarizing_speakers: "Detecting speakers…",
+  binding_speakers: "Matching speakers…",
+  preparing_analysis: "Preparing analysis…",
+  finding_moments: "Finding moments…",
+  crafting_scenes: "Crafting scenes…",
+  building_moments: "Building moments…",
+  ranking_moments: "Ranking moments…",
+  finalizing: "Finalizing clips…",
+};
+
+const STAGE_PROGRESS: Record<string, number> = {
+  preparing: 5,
+  downloading: 12,
+  extracting_audio: 20,
+  transcribing_audio: 35,
+  diarizing_speakers: 48,
+  binding_speakers: 58,
+  preparing_analysis: 65,
+  finding_moments: 72,
+  crafting_scenes: 80,
+  building_moments: 86,
+  ranking_moments: 92,
+  finalizing: 96,
 };
 
 interface Props {
@@ -57,12 +78,20 @@ export function VideoCard({ video, collections, onDeleted, onMoved }: Props) {
   }, [video.status]);
 
   const isProcessing = video.status === "pending" || video.status === "transcribing" || video.status === "identifying";
-  const progressPct = (() => {
-    if (video.status === "pending") return 3;
-    if (video.status === "transcribing") return transcribingPct(video.created_at);
-    if (video.status === "identifying")  return identifyingPct(identifyStartRef.current);
-    return 0;
-  })();
+  const progressPct =
+    video.status === "pending"
+      ? 3
+      : STAGE_PROGRESS[video.processing_stage ?? ""] ?? 2;
+
+  const statusLabel =
+    video.status === "pending"
+      ? "Queued"
+      : video.status === "ready"
+        ? "Ready"
+        : video.status === "error"
+          ? "Error"
+          : STAGE_LABELS[video.processing_stage ?? ""] ??
+            (video.status === "identifying" ? "Finding moments…" : "Analysing…");
 
   const handleDelete = async () => {
     setShowDeleteConfirm(false);
@@ -122,7 +151,7 @@ export function VideoCard({ video, collections, onDeleted, onMoved }: Props) {
         {video.status !== "ready" && (
           <span className="absolute top-1.5 left-1.5 flex items-center gap-1 text-[10px] font-medium bg-black/80 text-white px-2 py-0.5 rounded-sm">
             <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[video.status]}`} />
-            {STATUS_LABELS[video.status]}{isProcessing ? ` · ${Math.round(progressPct)}%` : ""}
+            {statusLabel}{isProcessing ? ` · ${Math.round(progressPct)}%` : ""}
           </span>
         )}
 

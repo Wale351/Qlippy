@@ -1,5 +1,5 @@
 """
-transcribe job — yt-dlp download → WAV → Replicate WhisperX → transcript.
+transcribe job — yt-dlp download → WAV → local MLX Whisper → transcript.
 On success auto-chains an identify_clips job (queued row + immediate start,
 so a crash between the two leaves a recoverable queued job, not a lost task).
 """
@@ -15,7 +15,6 @@ from pathlib import Path
 
 import httpx
 
-from config import REPLICATE_API_TOKEN, HUGGINGFACE_TOKEN, WHISPERX_MODEL_SIZES
 from sources import ensure_source, ensure_audio
 from pipeline.clip_thumbnail import extract_face_from_image, extract_portrait_preview
 from pipeline.portrait import bind_speakers_from_source
@@ -30,17 +29,6 @@ from db.supabase import (
 log = logging.getLogger(__name__)
 
 
-def _replicate_poll_timeout(duration_sec: float | None) -> float:
-    """
-    Transcription poll deadline scaled to content length: 30 min base
-    (covers queueing + cold start), plus time proportional to the audio —
-    WhisperX large runs roughly 10–30x realtime — capped at 3 hours.
-    """
-    base = 1800.0
-    if not duration_sec or duration_sec <= 0:
-        return base
-    return min(max(base, duration_sec * 0.3), 3 * 3600.0)
-
 
 def _transcribe_error_msg(e: Exception) -> str:
     msg = str(e)
@@ -50,7 +38,7 @@ def _transcribe_error_msg(e: Exception) -> str:
         return "Downloaded video was empty. The video may be unavailable or geo-restricted."
     if "audio" in msg.lower():
         return "Audio extraction failed. The video may have no audio track."
-    if "replicate" in msg.lower() or "whisperx" in msg.lower():
+    if "whisper" in msg.lower() or "transcrib" in msg.lower():
         return f"Transcription service error: {msg}"
     return f"Transcription failed: {msg}"
 
@@ -107,16 +95,16 @@ async def handle_transcribe(job: dict) -> None:
     Full transcription flow:
       1. yt-dlp download → R2 (ensure_source)
       2. Extract 16kHz mono WAV → R2 (ensure_audio)
-      3. Upload WAV to Replicate-accessible URL
-      4. Start victor-upmeet/whisperx prediction
-      5. Poll until done
-      6. Store transcript in Supabase + R2
+      3. Transcribe locally with MLX Whisper
+      4. Run local speaker diarization
+      5. Store transcript in Supabase + R2
     payload: {"video_id", "youtube_url", "model_size"?, "reprocess"?}
     """
     payload      = job["payload"]
     video_id     = payload["video_id"]
     youtube_url  = payload["youtube_url"]
     model_size   = payload.get("model_size", "large")
+    resolution   = int(payload.get("resolution", 720))
     job_id       = job["id"]
 
     # Reuse an existing transcript unless a deliberate fresh transcription
@@ -172,12 +160,12 @@ async def handle_transcribe(job: dict) -> None:
 
             # Step 1: download source video
             update_video(video_id, processing_stage="downloading")
-            source_local, source_r2_key = await ensure_source(video_id, youtube_url)
+            source_local, source_r2_key = await ensure_source(video_id, youtube_url, resolution)
 
             # Step 1b: portrait preview — extract now so the Frame Designer
             # is usable before clip identification runs.
             # Use ffprobe to find a representative timestamp (~20% in, min 10 s).
-            vid_dur = None  # also scales the Replicate poll deadline in Step 5
+            vid_dur = None
             try:
                 dur_result = subprocess.run(
                     ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",

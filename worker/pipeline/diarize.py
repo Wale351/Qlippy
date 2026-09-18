@@ -10,7 +10,7 @@ from functools import lru_cache
 def _get_pipeline():
     from pyannote.audio import Pipeline
 
-    token = os.getenv("HF_TOKEN")
+    token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
     if not token:
         raise RuntimeError("HF_TOKEN is not configured")
 

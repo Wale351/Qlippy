@@ -284,8 +284,8 @@ def reap_orphaned_jobs() -> int:
     run as in-memory tasks, so a job still 'processing' at boot was owned by
     a dead worker and will never finish — without this, its video/export
     stays pinned at "Finding clips…"/"Transcribing…"/90% forever.
-    Deliberately not auto-requeued: a crash loop must not re-spend LLM /
-    Replicate money unattended; the user retries from the UI.
+    Deliberately not auto-requeued: a crash loop must not repeatedly rerun expensive processing unattended;
+    the user retries from the UI.
 
     Assumes a single worker process. Returns the number of jobs reaped.
     """

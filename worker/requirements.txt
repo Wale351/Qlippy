@@ -12,8 +12,6 @@ opencv-python<5                 # insightface pulls this in unpinned; 5.x drops 
 insightface==1.0.1              # face detection + recognition embeddings (portrait pipeline)
 onnxruntime>=1.20,<2            # insightface backend
 spacy==3.8.2
-replicate==0.34.2
-openai==1.57.2          # OpenRouter uses OpenAI-compatible API
 pydantic==2.10.2
 aiofiles==24.1.0
 psutil>=5.9                     # worker RSS logging (pipeline/memlog.py)

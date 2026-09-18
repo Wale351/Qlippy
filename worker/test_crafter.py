@@ -51,7 +51,7 @@ def _run(candidates, sentences, features, response, min_dur=None, max_dur=None):
     crafter.call_agent = fake_call_agent
     try:
         clips = asyncio.run(craft_clips(
-            candidates, sentences, features, {}, "key",
+            candidates, sentences, features, {},
             min_duration_s=min_dur, max_duration_s=max_dur,
         ))
         return clips, fake_call_agent
@@ -70,8 +70,9 @@ def test_resolve_groups_validation():
     assert norm == [[6, 7], [1, 2]]
     assert cuts[0]["start"] > cuts[1]["start"]
     assert text == "S6. S7. S1. S2."
-    # Overlapping groups rejected
-    assert _resolve_groups([[1, 4], [3, 6]], sents, transplant=False) is None
+    # Overlapping groups are merged into one continuous range
+    norm, cuts, text = _resolve_groups([[1, 4], [3, 6]], sents, transplant=False)
+    assert norm == [[1, 6]]
     # Malformed
     assert _resolve_groups([[1]], sents, transplant=False) is None
     assert _resolve_groups([], sents, transplant=False) is None
@@ -93,7 +94,7 @@ def test_craft_basic_clip():
         "reasoning": "solid",
     })
     [clip] = clips
-    assert clip["label"] == "hero" and clip["score_total"] == 11
+    assert clip["label"] == "strong" and clip["score_total"] == 11
     assert clip["cuts_raw"] == [{"start": sents[5]["start"], "end": sents[9]["end"]}]
     assert not clip["stitched"] and not clip["transplant"]
     assert clip["speaker"] == "A"
@@ -163,19 +164,22 @@ def test_rejections_become_weak_clips_on_the_scout_span():
     weak_mh = {**ALL_TRUE_MH, "hook": False, "cold_start": False, "payoff": False}
     c = weak_of(_run([_candidate(5, 9)], sents, feats, {**base, "must_haves": weak_mh})[0])
     assert "must-haves" in c["reasoning"]
-    # duration gate — falls back to the scout span, not the crafter's cut
-    c = weak_of(_run([_candidate(5, 9)], sents, feats, {**base, "sentence_groups": [[5, 5]]})[0])
-    assert c["sentence_groups"] == [[5, 9]] and "outside" in c["reasoning"]
-    # malformed boundaries
-    c = weak_of(_run([_candidate(5, 9)], sents, feats, {**base, "sentence_groups": [[9, 5]]})[0])
-    assert "unusable" in c["reasoning"]
+    # Short cuts are expanded with nearby context instead of being rejected.
+    c = _run([_candidate(5, 9)], sents, feats, {**base, "sentence_groups": [[5, 5]]})[0][0]
+    assert c["label"] == "strong"
+    assert c["duration_sec"] >= crafter.GATE_MIN_S
+    assert c["sentence_groups"] != [[5, 5]]
+    # Reversed boundaries from small local models are repaired automatically.
+    c = _run([_candidate(5, 9)], sents, feats, {**base, "sentence_groups": [[9, 5]]})[0][0]
+    assert c["label"] == "strong"
+    assert c["sentence_groups"] == [[5, 9]]
     # LLM exception
     async def boom(*a, **kw):
         raise RuntimeError("down")
     orig = crafter.call_agent
     crafter.call_agent = boom
     try:
-        c = weak_of(asyncio.run(craft_clips([_candidate(5, 9)], sents, feats, {}, "key")))
+        c = weak_of(asyncio.run(craft_clips([_candidate(5, 9)], sents, feats, {})))
     finally:
         crafter.call_agent = orig
     assert "failed" in c["reasoning"]
@@ -187,7 +191,9 @@ def test_rejections_become_weak_clips_on_the_scout_span():
 def test_humor_can_reach_hero_without_learning():
     # The old 'learning' must-have is gone — 'payoff' covers laughs
     sents = _sentences(20)
-    clips, _ = _run([_candidate(5, 9, archetype="humor")], sents, _features(20), {
+    candidate = _candidate(5, 9, archetype="humor")
+    candidate["score"] = 90
+    clips, _ = _run([candidate], sents, _features(20), {
         "keep": True, "transplant": False, "sentence_groups": [[5, 9]],
         "must_haves": {"hook": True, "cold_start": True, "single_point": True,
                        "clean_ending": True, "payoff": True},

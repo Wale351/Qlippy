@@ -60,7 +60,7 @@ def ytdlp_cookies_args() -> list[str]:
     return ["--cookies", _yt_cookies_path]
 
 
-async def ensure_source(video_id: str, youtube_url: str) -> tuple[str, str]:
+async def ensure_source(video_id: str, youtube_url: str, resolution: int = 720) -> tuple[str, str]:
     """
     Download source video once, cache in R2.
     Returns (local_temp_path, r2_key).
@@ -80,7 +80,7 @@ async def ensure_source(video_id: str, youtube_url: str) -> tuple[str, str]:
             subprocess.run,
             [
                 *YTDLP_CMD,
-                "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "--format", f"bestvideo[height<={resolution}][ext=mp4]+bestaudio[ext=m4a]/best[height<={resolution}][ext=mp4]/best[height<={resolution}]",
                 "--merge-output-format", "mp4",
                 "--output", local_path,
                 "--no-playlist",

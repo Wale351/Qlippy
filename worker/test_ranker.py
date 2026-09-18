@@ -20,19 +20,9 @@ def _clip(i: int, start: float, dur: float = 30.0, archetype: str = "insight",
     }
 
 
-def _run(clips, response, target_tones=None, max_clips=10):
-    async def fake_call_agent(agent, system, user, **kw):
-        assert agent == "ranker"
-        fake_call_agent.last = (system, user)
-        return response
-
-    orig = ranker.call_agent
-    ranker.call_agent = fake_call_agent
-    try:
-        out = asyncio.run(rank_clips(clips, "key", target_tones, max_clips))
-        return out, fake_call_agent
-    finally:
-        ranker.call_agent = orig
+def _run(clips, response=None, target_tones=None, max_clips=10):
+    out = asyncio.run(rank_clips(clips, target_tones, max_clips))
+    return out, None
 
 
 def test_overlap_fraction():
@@ -59,13 +49,17 @@ def test_sanitize_order():
     assert order == [3, 2, 1, 0]
 
 
-def test_llm_order_respected_and_ranked():
-    clips = [_clip(0, 0.0), _clip(1, 100.0), _clip(2, 200.0)]
-    out, fake = _run(clips, {"order": [1, 2, 0]})
+def test_deterministic_score_order_and_rank():
+    clips = [
+        _clip(0, 0.0, score_total=5),
+        _clip(1, 100.0, score_total=11),
+        _clip(2, 200.0, score_total=8),
+    ]
+
+    out, _ = _run(clips)
+
+    assert [c["score_total"] for c in out] == [11, 8, 5]
     assert [c["rank"] for c in out] == [1, 2, 3]
-    assert out[0]["cuts_raw"][0]["start"] == 100.0
-    system, user = fake.last
-    assert "Clip 0" in user and "Clip 2" in user
 
 
 def test_overlap_dedup_keeps_better_ranked():
@@ -93,43 +87,41 @@ def test_archetype_diversity_cap():
 
 def test_max_clips_and_single_clip():
     clips = [_clip(i, i * 200.0) for i in range(8)]
-    out, _ = _run(clips, {"order": list(range(8))}, max_clips=3)
+
+    out, _ = _run(clips, max_clips=3)
     assert len(out) == 3
-    # Single clip skips the LLM entirely
-    async def boom(*a, **kw):
-        raise AssertionError("should not be called")
-    orig = ranker.call_agent
-    ranker.call_agent = boom
-    try:
-        out = asyncio.run(rank_clips([_clip(0, 0.0)], "key"))
-    finally:
-        ranker.call_agent = orig
+
+    out = asyncio.run(rank_clips([_clip(0, 0.0)]))
     assert len(out) == 1 and out[0]["rank"] == 1
-    assert asyncio.run(rank_clips([], "key")) == []
+
+    assert asyncio.run(rank_clips([])) == []
 
 
-def test_llm_failure_falls_back_to_checklist_order():
-    clips = [
-        _clip(0, 0.0, score_total=5),
-        _clip(1, 200.0, score_total=11),
-        _clip(2, 400.0, score_total=8),
-    ]
-    async def boom(*a, **kw):
-        raise RuntimeError("down")
-    orig = ranker.call_agent
-    ranker.call_agent = boom
-    try:
-        out = asyncio.run(rank_clips(clips, "key"))
-    finally:
-        ranker.call_agent = orig
-    assert [c["score_total"] for c in out] == [11, 8, 5]
+def test_host_question_open_is_penalized():
+    a = _clip(0, 0.0, score_total=10, scout_score=80)
+    b = _clip(1, 200.0, score_total=9, scout_score=70)
+
+    a["host_question_open"] = True
+
+    out = asyncio.run(rank_clips([a, b]))
+
+    assert out[0] is b
+    assert out[1] is a
 
 
-def test_tone_hint_in_prompt():
+def test_target_tones_do_not_break_local_ranking():
     clips = [_clip(0, 0.0), _clip(1, 200.0)]
-    _, fake = _run(clips, {"order": [0, 1]}, target_tones=["entertaining", "emotional"])
-    system, _ = fake.last
-    assert "entertaining, emotional" in system
+
+    out = asyncio.run(
+        rank_clips(
+            clips,
+            target_tones=["entertaining", "emotional"],
+        )
+    )
+
+    assert len(out) == 2
+    assert [c["rank"] for c in out] == [1, 2]
+
 
 
 if __name__ == "__main__":

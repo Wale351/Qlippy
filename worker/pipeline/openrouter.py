@@ -1,7 +1,7 @@
 """
-Shared OpenRouter client for the clip pipeline agents.
-Each agent has a primary model and a fallback — the fallback is tried
-automatically when the primary fails. All agents return strict JSON.
+Shared local Ollama client for the clip pipeline agents.
+Each agent has a primary model and fallback retry path.
+All agents return strict JSON.
 """
 
 from __future__ import annotations
@@ -15,9 +15,7 @@ import httpx
 
 log = logging.getLogger(__name__)
 
-OPENROUTER_BASE = os.getenv("LLM_BASE_URL", "http://127.0.0.1:11434/v1")
-
-# Per-agent model routing (spec §9) — env-overridable, OpenRouter slugs
+# Per-agent local Ollama model routing
 # Budget shape: cheap model for the high-fanout scout, mid model for per-clip
 # crafting, strongest model for the single comparative-ranking call.
 AGENT_MODELS: dict[str, tuple[str, str]] = {
@@ -46,9 +44,10 @@ async def _call_model(
     model: str,
     system: str,
     user: str,
-    api_key: str,
+    api_key: str | None,
     temperature: float,
     max_tokens: int,
+    num_ctx: int = 8192,
 ) -> str:
     body = {
         "model": model,
@@ -62,7 +61,7 @@ async def _call_model(
         "options": {
             "temperature": temperature,
             "num_predict": max_tokens,
-            "num_ctx": 8192,
+            "num_ctx": num_ctx,
         },
     }
 
@@ -89,11 +88,34 @@ async def call_agent(
     """
     primary, fallback = AGENT_MODELS[agent]
     last_error: Exception | None = None
-    for model in (primary, primary, fallback):
+
+    attempts = [
+        (primary, max_tokens),
+        (primary, max(max_tokens, 6144)),
+        (fallback, max(max_tokens, 8192)),
+    ]
+
+    num_ctx = 16384 if agent in {"scout", "moment_builder"} else 8192
+
+    for model, token_budget in attempts:
         try:
-            raw = await _call_model(model, system, user, api_key, temperature, max_tokens)
+            raw = await _call_model(
+                model,
+                system,
+                user,
+                api_key,
+                temperature,
+                token_budget,
+                num_ctx,
+            )
             return parse_json_response(raw)
         except Exception as e:
             last_error = e
-            log.warning("Agent %s call failed on %s: %s", agent, model, e)
+            log.warning(
+                "Agent %s call failed on %s (%d tokens): %s",
+                agent,
+                model,
+                token_budget,
+                e,
+            )
     raise RuntimeError(f"Agent {agent} failed on primary and fallback: {last_error}")

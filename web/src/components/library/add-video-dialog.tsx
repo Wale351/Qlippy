@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Plus, Loader2, X, AlertCircle, Clock } from "lucide-react";
 import { Collection } from "@/lib/types";
+import { formatDuration } from "@/lib/youtube";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 
@@ -42,6 +43,23 @@ export function AddVideoDialog({ onAdded }: Props) {
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState("");
 
+  type InspectResolution = {
+    height: number;
+    requested_height: number;
+    estimated_size: number | null;
+  };
+
+  type InspectData = {
+    title: string;
+    duration: number | null;
+    thumbnail: string | null;
+    resolutions: InspectResolution[];
+  };
+
+  const [inspectData, setInspectData] = useState<InspectData | null>(null);
+  const [inspecting, setInspecting] = useState(false);
+  const [resolution, setResolution] = useState(720);
+
   const [collections, setCollections]           = useState<Collection[]>([]);
   const [collectionId, setCollectionId]         = useState("");
   const [selectedCollName, setSelectedCollName] = useState("");
@@ -62,6 +80,9 @@ export function AddVideoDialog({ onAdded }: Props) {
     setUrl("");
     setUrlTouched(false);
     setError("");
+    setInspectData(null);
+    setInspecting(false);
+    setResolution(720);
     setCollectionId("");
     setSelectedCollName("");
     setCollSearch("");
@@ -110,23 +131,61 @@ export function AddVideoDialog({ onAdded }: Props) {
   const handleSubmit = async (e: { preventDefault(): void }) => {
     e.preventDefault();
     setUrlTouched(true);
+
     const validationErr = validateUrl(url);
-    if (validationErr) { setError(validationErr); return; }
+    if (validationErr) {
+      setError(validationErr);
+      return;
+    }
 
     setError("");
+
+    if (!inspectData) {
+      setInspecting(true);
+      try {
+        const res = await fetch("/api/videos/inspect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ youtube_url: url.trim() }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to inspect video");
+
+        setInspectData(data);
+
+        const available = (data.resolutions ?? []).map(
+          (r: InspectResolution) => r.requested_height
+        );
+
+        if (!available.includes(720)) {
+          setResolution(available.includes(480) ? 480 : available[0] ?? 720);
+        }
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : "Failed to inspect video");
+      } finally {
+        setInspecting(false);
+      }
+      return;
+    }
+
     setLoading(true);
+
     try {
       const res = await fetch("/api/videos", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          youtube_url:   url.trim(),
-          model_size:    "large",
+          youtube_url: url.trim(),
+          model_size: "large",
           collection_id: collectionId || null,
+          resolution,
         }),
       });
+
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to add video");
+
       resetAndClose();
       onAdded();
     } catch (err: unknown) {
@@ -134,6 +193,12 @@ export function AddVideoDialog({ onAdded }: Props) {
     } finally {
       setLoading(false);
     }
+  };
+
+  const formatBytes = (bytes: number | null) => {
+    if (!bytes) return "Size unavailable";
+    const mb = bytes / 1_000_000;
+    return mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${Math.round(mb)} MB`;
   };
 
   if (!open) {
@@ -184,6 +249,8 @@ export function AddVideoDialog({ onAdded }: Props) {
               value={url}
               onChange={(e) => {
                 setUrl(e.target.value);
+                setInspectData(null);
+                setResolution(720);
                 if (error) setError("");
               }}
               onBlur={() => setUrlTouched(true)}
@@ -213,6 +280,61 @@ export function AddVideoDialog({ onAdded }: Props) {
               <p className="mt-1.5 text-xs text-green-500">Valid YouTube URL</p>
             )}
           </div>
+
+          {inspectData && (
+            <div
+              className="rounded-xl p-3 space-y-3"
+              style={{ background: "var(--yt-surface-2)", border: "1px solid var(--yt-border)" }}
+            >
+              <div>
+                <p className="text-sm font-medium text-white line-clamp-2">{inspectData.title}</p>
+                {inspectData.duration != null && (
+                  <p className="mt-1 text-xs" style={{ color: "var(--yt-text-2)" }}>
+                    Duration: {formatDuration(inspectData.duration)}
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <p className="text-xs mb-2" style={{ color: "var(--yt-text-2)" }}>
+                  Download resolution
+                </p>
+
+                <div className="grid grid-cols-4 gap-2">
+                  {inspectData.resolutions.map((r) => (
+                    <button
+                      key={r.requested_height}
+                      type="button"
+                      onClick={() => setResolution(r.requested_height)}
+                      className="rounded-lg px-2 py-2 text-xs font-medium transition-colors"
+                      style={{
+                        background:
+                          resolution === r.requested_height
+                            ? "var(--yt-red)"
+                            : "var(--yt-surface)",
+                        color: "white",
+                        border: "1px solid var(--yt-border)",
+                      }}
+                    >
+                      {r.requested_height}p
+                    </button>
+                  ))}
+                </div>
+
+                {(() => {
+                  const selected = inspectData.resolutions.find(
+                    (r) => r.requested_height === resolution
+                  );
+
+                  return (
+                    <p className="mt-2 text-xs" style={{ color: "var(--yt-text-2)" }}>
+                      Estimated download: {formatBytes(selected?.estimated_size ?? null)}
+                    </p>
+                  );
+                })()}
+              </div>
+            </div>
+          )}
 
           {/* Collection */}
           <div>
@@ -297,11 +419,15 @@ export function AddVideoDialog({ onAdded }: Props) {
             </button>
             <button
               type="submit"
-              disabled={!!validateUrl(url)}
+              disabled={!!validateUrl(url) || inspecting}
               className="flex items-center gap-2 px-4 py-2 disabled:opacity-50 text-white text-sm font-medium rounded-full transition-colors"
               style={{ background: "var(--yt-red)" }}
             >
-              Add & Find Clips
+              {inspecting
+                ? "Checking video…"
+                : inspectData
+                  ? "Start processing"
+                  : "Check video"}
             </button>
           </div>
         </form>

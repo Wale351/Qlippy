@@ -11,8 +11,6 @@ import os
 from unittest import mock
 
 os.environ.setdefault("WORKER_SECRET", "test")
-os.environ.setdefault("OPENROUTER_API_KEY", "test")
-os.environ.setdefault("REPLICATE_API_TOKEN", "test")
 
 import runner
 

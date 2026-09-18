@@ -74,7 +74,7 @@ def test_scout_merges_dedupes_and_ranks():
     scout.call_agent = fake_call_agent
     try:
         out = asyncio.run(scout_moments(
-            sents, _features(20), {}, "key",
+            sents, _features(20), {},
             context={"title": "My Pod", "target_tones": ["entertaining"], "niche": "fitness"},
         ))
     finally:
@@ -98,11 +98,11 @@ def test_scout_chunk_failure_is_nonfatal():
     orig = scout.call_agent
     scout.call_agent = boom
     try:
-        out = asyncio.run(scout_moments(_sentences(5), _features(5), {}, "key"))
+        out = asyncio.run(scout_moments(_sentences(5), _features(5), {}))
     finally:
         scout.call_agent = orig
     assert out == []
-    assert asyncio.run(scout_moments([], [], {}, "key")) == []
+    assert asyncio.run(scout_moments([], [], {})) == []
 
 
 def test_tone_hint_empty_without_context():
