@@ -13,6 +13,7 @@ from typing import BinaryIO
 
 import boto3
 from botocore.client import Config
+from botocore.exceptions import ClientError
 
 log = logging.getLogger(__name__)
 
@@ -28,7 +29,14 @@ def _get_client():
             aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
             aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
             # Path-style addressing: required by Supabase Storage, accepted by R2.
-            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},
+                retries={"max_attempts": 4, "mode": "standard"},
+                connect_timeout=10,
+                read_timeout=60,
+                tcp_keepalive=True,
+            ),
             region_name=os.getenv("R2_REGION", "auto"),
         )
     return _client
@@ -83,12 +91,16 @@ def get_presigned_url(r2_key: str, expires_in: int = 3600) -> str:
 
 
 def key_exists(r2_key: str) -> bool:
-    """Check if an R2 key exists (for ensure_source idempotency)."""
+    """Check whether an object exists without hiding transient storage failures."""
     try:
         _get_client().head_object(Bucket=BUCKET, Key=r2_key)
         return True
-    except Exception:
-        return False
+    except ClientError as exc:
+        code = str(exc.response.get("Error", {}).get("Code", ""))
+        status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if code in {"404", "NoSuchKey", "NotFound"} or status == 404:
+            return False
+        raise
 
 
 def delete_keys(keys: list[str]) -> None:

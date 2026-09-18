@@ -6,7 +6,10 @@ Uses service-role key (bypasses RLS) — worker has full access.
 from __future__ import annotations
 import os
 import time
+import logging
 from supabase import create_client, Client
+
+log = logging.getLogger(__name__)
 
 _client: Client | None = None
 
@@ -21,63 +24,121 @@ def get_db() -> Client:
     return _client
 
 
+def _execute_with_retry(fn, label: str, attempts: int = 3):
+    """Retry safe Supabase reads/updates on transient connection failures."""
+    last_error = None
+
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except Exception as exc:
+            last_error = exc
+            if attempt >= attempts - 1:
+                break
+
+            delay = 2 * (attempt + 1)
+            log.warning(
+                "Supabase %s failed (%d/%d): %s — retrying in %ds",
+                label, attempt + 1, attempts, exc, delay,
+            )
+            time.sleep(delay)
+
+    raise last_error
+
+
 # ---- Convenience helpers ----
 
 def update_job(job_id: str, **fields) -> None:
-    get_db().table("jobs").update(fields).eq("id", job_id).execute()
+    _execute_with_retry(
+        lambda: get_db().table("jobs").update(fields).eq("id", job_id).execute(),
+        "update_job",
+    )
 
 
 def finish_job(job_id: str, **fields) -> None:
     """Terminal job update (done/error) that never overwrites a cancellation."""
-    get_db().table("jobs").update(fields).eq("id", job_id).neq("status", "cancelled").execute()
+    _execute_with_retry(
+        lambda: get_db().table("jobs").update(fields).eq("id", job_id).neq("status", "cancelled").execute(),
+        "finish_job",
+    )
 
 
 def update_video(video_id: str, **fields) -> None:
-    get_db().table("videos").update(fields).eq("id", video_id).execute()
+    _execute_with_retry(
+        lambda: get_db().table("videos").update(fields).eq("id", video_id).execute(),
+        "update_video",
+    )
 
 
 def update_export(export_id: str, **fields) -> None:
-    get_db().table("exports").update(fields).eq("id", export_id).execute()
+    _execute_with_retry(
+        lambda: get_db().table("exports").update(fields).eq("id", export_id).execute(),
+        "update_export",
+    )
 
 
 def get_job(job_id: str) -> dict:
-    res = get_db().table("jobs").select("*").eq("id", job_id).single().execute()
+    res = _execute_with_retry(
+        lambda: get_db().table("jobs").select("*").eq("id", job_id).single().execute(),
+        "get_job",
+    )
     return res.data
 
 
 def get_video(video_id: str) -> dict:
-    res = get_db().table("videos").select("*").eq("id", video_id).single().execute()
+    res = _execute_with_retry(
+        lambda: get_db().table("videos").select("*").eq("id", video_id).single().execute(),
+        "get_video",
+    )
     return res.data
 
 
 def get_transcript(video_id: str) -> dict | None:
-    res = get_db().table("transcripts").select("*").eq("video_id", video_id).maybe_single().execute()
+    res = _execute_with_retry(
+        lambda: get_db().table("transcripts").select("*").eq("video_id", video_id).maybe_single().execute(),
+        "get_transcript",
+    )
     return res.data if res else None
 
 
 def get_clip(clip_id: str) -> dict:
-    res = get_db().table("clips").select("*").eq("id", clip_id).single().execute()
+    res = _execute_with_retry(
+        lambda: get_db().table("clips").select("*").eq("id", clip_id).single().execute(),
+        "get_clip",
+    )
     return res.data
 
 
 def get_export(export_id: str) -> dict:
-    res = get_db().table("exports").select("*").eq("id", export_id).single().execute()
+    res = _execute_with_retry(
+        lambda: get_db().table("exports").select("*").eq("id", export_id).single().execute(),
+        "get_export",
+    )
     return res.data
 
 
 def get_clip_edit(edit_id: str) -> dict | None:
-    res = get_db().table("clip_edits").select("*").eq("id", edit_id).maybe_single().execute()
+    res = _execute_with_retry(
+        lambda: get_db().table("clip_edits").select("*").eq("id", edit_id).maybe_single().execute(),
+        "get_clip_edit",
+    )
     return res.data if res else None
 
 
 def update_clip_edit(edit_id: str, **fields) -> None:
-    get_db().table("clip_edits").update(fields).eq("id", edit_id).execute()
+    _execute_with_retry(
+        lambda: get_db().table("clip_edits").update(fields).eq("id", edit_id).execute(),
+        "update_clip_edit",
+    )
 
 
 def get_preset(preset_id: str) -> dict | None:
     if not preset_id:
         return None
-    res = get_db().table("presets").select("*").eq("id", preset_id).maybe_single().execute()
+    res = _execute_with_retry(
+        lambda: get_db().table("presets").select("*").eq("id", preset_id).maybe_single().execute(),
+        "get_preset",
+    )
     return res.data if res else None
 
 
