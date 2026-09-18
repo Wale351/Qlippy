@@ -28,6 +28,7 @@ export interface Video {
   channel_name: string | null;
   tags: string[];
   status: VideoStatus;
+  processing_stage: string | null;
   error_msg: string | null;
   face_url: string | null;
   collection_id: string | null;

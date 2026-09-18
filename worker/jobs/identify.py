@@ -90,6 +90,7 @@ async def handle_identify_clips(job: dict) -> None:
             }
 
         # Step 1: Sentencize
+        update_video(video_id, processing_stage="preparing_analysis")
         sentences = sentencize(raw_words)
         log.info("Sentencize: %d sentences from video %s", len(sentences), video_id)
 
@@ -144,6 +145,7 @@ async def handle_identify_clips(job: dict) -> None:
             "audience":     preferences.get("audience", ""),
             "target_tones": preferences.get("target_tones") or [],
         }
+        update_video(video_id, processing_stage="finding_moments")
         candidates = await scout_moments(
             sentences, feats, roles, OPENROUTER_API_KEY, scout_context,
         )
@@ -252,6 +254,7 @@ async def handle_identify_clips(job: dict) -> None:
 
         # Stage 2 — Clip Crafter: exact boundaries in play order (hook
         # transplant may put the payoff cut first), checklist, duration gate
+        update_video(video_id, processing_stage="crafting_scenes")
         crafted = await craft_clips(
             candidates, sentences, feats, roles, OPENROUTER_API_KEY,
             min_duration_s=6,
@@ -259,6 +262,7 @@ async def handle_identify_clips(job: dict) -> None:
         )
 
         # Stage 3 — Moment Builder: group related scenes into complete Moments
+        update_video(video_id, processing_stage="building_moments")
         moments = await build_moments(
             crafted,
             OPENROUTER_API_KEY,
@@ -268,11 +272,13 @@ async def handle_identify_clips(job: dict) -> None:
 
         # Stage 4 — Rank the finished Moments
         max_clips = int(preferences.get("max_clips") or 10)
+        update_video(video_id, processing_stage="ranking_moments")
         ranked = await rank_clips(
             moments, OPENROUTER_API_KEY, scout_context["target_tones"], max_clips,
         )
 
         # Audio Cut Finder: pure index lookups per chunk boundary
+        update_video(video_id, processing_stage="finalizing")
         refined = [find_cut_points(c, energy_index, diar_timeline) for c in ranked]
 
         # Hook Writer disabled for local mode.
@@ -379,7 +385,7 @@ async def handle_identify_clips(job: dict) -> None:
         # A preview is already generated during transcription, avoiding
         # another full source-video download from R2.
 
-        update_video(video_id, status="ready")
+        update_video(video_id, status="ready", processing_stage=None)
 
         summary = _summary(refined, time.monotonic() - t0)
         finish_job(
@@ -397,5 +403,5 @@ async def handle_identify_clips(job: dict) -> None:
     except Exception as e:
         log.exception("Clip identification failed for job %s", job_id)
         finish_job(job_id, status="error", error_msg=str(e), finished_at=datetime.utcnow().isoformat())
-        update_video(video_id, status="error", error_msg=str(e))
+        update_video(video_id, status="error", error_msg=str(e), processing_stage=None)
         raise

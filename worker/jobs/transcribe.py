@@ -93,7 +93,7 @@ async def _chain_identify_clips(transcribe_job: dict, video_id: str) -> None:
         "payload":   job_payload,
     })
 
-    update_video(video_id, status="identifying")
+    update_video(video_id, status="identifying", processing_stage="preparing_analysis")
     # Late import (runner imports this module via the handler registry).
     # start_job claims the queued row and runs it here; if this process dies
     # first, the row is still 'queued' and the poll loop picks it up.
@@ -145,7 +145,7 @@ async def handle_transcribe(job: dict) -> None:
             return
 
     update_job(job_id, status="processing", started_at=datetime.utcnow().isoformat())
-    update_video(video_id, status="transcribing")
+    update_video(video_id, status="transcribing", processing_stage="preparing")
 
     last_error: Exception | None = None
 
@@ -171,6 +171,7 @@ async def handle_transcribe(job: dict) -> None:
                         log.warning("Face extraction failed for video %s: %s", video_id, _fe)
 
             # Step 1: download source video
+            update_video(video_id, processing_stage="downloading")
             source_local, source_r2_key = await ensure_source(video_id, youtube_url)
 
             # Step 1b: portrait preview — extract now so the Frame Designer
@@ -203,12 +204,14 @@ async def handle_transcribe(job: dict) -> None:
                 log.warning("Early portrait preview failed (non-fatal): %s", _pe)
 
             # Step 2: extract audio
+            update_video(video_id, processing_stage="extracting_audio")
             audio_local, audio_r2_key = await ensure_audio(video_id, source_local)
 
             # Step 3: local transcription with MLX Whisper
             import mlx_whisper
 
             local_model = "mlx-community/whisper-small-mlx"
+            update_video(video_id, processing_stage="transcribing_audio")
             log.info("Starting local MLX Whisper transcription: %s", local_model)
 
             output = await asyncio.to_thread(
@@ -225,6 +228,7 @@ async def handle_transcribe(job: dict) -> None:
             # Local speaker diarization.
             # MLX Whisper provides timestamps but no speaker identities.
             try:
+                update_video(video_id, processing_stage="diarizing_speakers")
                 log.info("Starting local speaker diarization")
                 diar_timeline = await asyncio.to_thread(
                     diarize_audio,
@@ -281,6 +285,7 @@ async def handle_transcribe(job: dict) -> None:
             # cutaway; over the full episode the real speaker wins. Source is
             # already local here, so this is the cheap moment to do it.
             try:
+                update_video(video_id, processing_stage="binding_speakers")
                 diar_tl = _build_diar_timeline(transcript)
                 if diar_tl:
                     faces = await asyncio.to_thread(bind_speakers_from_source, source_local, diar_tl)
@@ -320,7 +325,7 @@ async def handle_transcribe(job: dict) -> None:
     if last_error is not None:
         msg = _transcribe_error_msg(last_error)
         finish_job(job_id, status="error", error_msg=msg, finished_at=datetime.utcnow().isoformat())
-        update_video(video_id, status="error", error_msg=msg)
+        update_video(video_id, status="error", error_msg=msg, processing_stage=None)
         log.error("Transcription failed after 2 attempts for video %s: %s", video_id, msg)
         return
 

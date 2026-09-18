@@ -12,7 +12,7 @@ import { VersionPicker } from "@/components/clips/version-picker";
 import { Modal } from "@/components/ui/modal";
 import { Menu, MenuItem } from "@/components/ui/menu";
 import { useExportTracker } from "@/lib/export-tracker";
-import { exportProgressPct, transcribingPct, identifyingPct } from "@/lib/processing-progress";
+import { exportProgressPct } from "@/lib/processing-progress";
 import { downloadUrl } from "@/lib/save-file";
 import { queueBulkExports } from "@/lib/bulk-export";
 import {
@@ -134,31 +134,25 @@ export function VideoChannelClient({ video, transcript, clips, clipExports, pend
     return () => clearTimeout(t);
   }, [video.status, retryCount, video.id, retryStorageKey, router]);
 
-  // Processing progress ticker
-  const identifyStartRef = useRef<number | null>(null);
-  const [, setProgressTick] = useState(0);
+  const stageProgress: Record<string, number> = {
+    preparing: 5,
+    downloading: 12,
+    extracting_audio: 20,
+    transcribing_audio: 35,
+    diarizing_speakers: 48,
+    binding_speakers: 58,
+    preparing_analysis: 65,
+    finding_moments: 72,
+    crafting_scenes: 80,
+    building_moments: 86,
+    ranking_moments: 92,
+    finalizing: 96,
+  };
 
-  // Seed the climb start on the first identifying render — whether we just
-  // transitioned in or loaded the page mid-identify. A fresh load has no
-  // transition, which previously left identifyStartRef null and pinned the bar
-  // at exactly 68% forever. Clear on exit so a reprocess re-seeds.
-  if (video.status === "identifying") {
-    if (identifyStartRef.current === null) identifyStartRef.current = Date.now();
-  } else {
-    identifyStartRef.current = null;
-  }
-
-  useEffect(() => {
-    if (video.status !== "transcribing" && video.status !== "identifying") return;
-    const iv = setInterval(() => setProgressTick((n) => n + 1), 1000);
-    return () => clearInterval(iv);
-  }, [video.status]);
-
-  const processingPct = (() => {
-    if (video.status === "transcribing") return transcribingPct(video.created_at);
-    if (video.status === "identifying")  return identifyingPct(identifyStartRef.current);
-    return 0;
-  })();
+  const processingPct =
+    video.status === "ready"
+      ? 100
+      : stageProgress[video.processing_stage ?? ""] ?? 2;
 
   // Stable export polling
   const pendingRef = useRef<Map<string, string>>(
@@ -518,6 +512,24 @@ function BulkExportConfirm({ count, onConfirm, onClose }: {
 // ── Processing status strip ───────────────────────────────────────────────────
 
 function ProcessingStatus({ video, processingPct, retryCount }: { video: Video; processingPct: number; retryCount: number }) {
+  const stageLabels: Record<string, string> = {
+    preparing: "Preparing…",
+    downloading: "Downloading video…",
+    extracting_audio: "Extracting audio…",
+    transcribing_audio: "Transcribing audio…",
+    diarizing_speakers: "Detecting speakers…",
+    binding_speakers: "Matching speakers…",
+    preparing_analysis: "Preparing analysis…",
+    finding_moments: "Finding moments…",
+    crafting_scenes: "Crafting scenes…",
+    building_moments: "Building moments…",
+    ranking_moments: "Ranking moments…",
+    finalizing: "Finalizing clips…",
+  };
+
+  const stageLabel =
+    stageLabels[video.processing_stage ?? ""] ??
+    (video.status === "identifying" ? "Finding moments…" : "Analysing…");
   if (video.status === "pending") return (
     <span className="flex items-center gap-1.5 text-xs" style={{ color: "var(--yt-text-2)" }}>
       <Clock className="w-3.5 h-3.5 animate-pulse" /> Queued…
@@ -527,7 +539,7 @@ function ProcessingStatus({ video, processingPct, retryCount }: { video: Video; 
   if (video.status === "transcribing") return (
     <div className="flex flex-col gap-1">
       <span className="flex items-center justify-between text-xs" style={{ color: "var(--yt-text-2)" }}>
-        <span className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5 animate-pulse" />Analysing…</span>
+        <span className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5 animate-pulse" />{stageLabel}</span>
         <span>{Math.round(processingPct)}%</span>
       </span>
       <div className="h-1 rounded-full overflow-hidden" style={{ background: "var(--yt-surface-2)" }}>
@@ -539,7 +551,7 @@ function ProcessingStatus({ video, processingPct, retryCount }: { video: Video; 
   if (video.status === "identifying") return (
     <div className="flex flex-col gap-1">
       <span className="flex items-center justify-between text-xs font-medium" style={{ color: "var(--yt-text-2)" }}>
-        <span className="flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" />Finding clips…</span>
+        <span className="flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" />{stageLabel}</span>
         <span>{Math.round(processingPct)}%</span>
       </span>
       <div className="h-1 rounded-full overflow-hidden" style={{ background: "var(--yt-surface-2)" }}>
