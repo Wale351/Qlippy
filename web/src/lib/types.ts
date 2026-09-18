@@ -301,8 +301,8 @@ export const DEFAULT_PRESET_CONFIG: PresetConfig = {
     slide_direction: "up",
   },
   highlight: DEFAULT_HIGHLIGHT_STYLE,
-  hyperframes_component: "pill",
-  style_id: "pill",
+  hyperframes_component: null,
+  style_id: "clean",
 };
 
 
