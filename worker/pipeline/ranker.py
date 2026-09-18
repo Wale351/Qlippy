@@ -123,33 +123,10 @@ async def rank_clips(
     if not clips:
         return []
 
-    if len(clips) == 1:
-        order = [0]
-    else:
-        tone_hint = (
-            f"\n- the creator prefers {', '.join(target_tones)} content — "
-            "weight matching clips up without burying an exceptional outlier"
-            if target_tones else ""
-        )
-        blocks = []
-        for i, c in enumerate(clips):
-            blocks.append(
-                f"Clip {i} [{c['archetype']}, {c['duration_sec']:.0f}s, "
-                f"checklist {c['score_total']}/11"
-                + (", hook-transplanted" if c.get("transplant") else "")
-                + f"]:\n{c['text'][:TEXT_PREVIEW_CHARS]}"
-            )
-        try:
-            data = await call_agent(
-                "ranker",
-                SYSTEM_PROMPT.format(tone_hint=tone_hint),
-                "Clips:\n\n" + "\n\n".join(blocks),
-                api_key=api_key, temperature=0.1, max_tokens=2048,
-            )
-            order = _sanitize_order(data, len(clips), clips)
-        except Exception as e:
-            log.warning("Ranker LLM failed (%s) — falling back to checklist order", e)
-            order = _fallback_order(clips)
+    # Local mode: skip the extra LLM ranking call.
+    # Crafter/scout scores are already available, and the deterministic
+    # ranking still applies overlap removal and archetype diversity.
+    order = _fallback_order(clips)
 
     ranked = _apply_constraints(order, clips, max_clips)
     for rank, clip in enumerate(ranked, start=1):

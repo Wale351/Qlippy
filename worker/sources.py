@@ -25,6 +25,13 @@ from db.supabase import update_video
 
 log = logging.getLogger(__name__)
 
+LOCAL_CACHE_DIR = Path.home() / ".clippy-cache"
+
+def cached_source_path(video_id: str) -> str:
+    folder = LOCAL_CACHE_DIR / "sources" / video_id
+    folder.mkdir(parents=True, exist_ok=True)
+    return str(folder / "source.mp4")
+
 
 def ytdlp_proxy_args() -> list[str]:
     """Route yt-dlp through a proxy (e.g. rotating residential) when YT_PROXY is set.
@@ -57,14 +64,17 @@ async def ensure_source(video_id: str, youtube_url: str) -> tuple[str, str]:
     Idempotent — if already in R2 (and non-empty), downloads from there instead.
     """
     r2_key = f"sources/{video_id}/source.mp4"
-    local_path = tempfile.mktemp(suffix=".mp4")
+    local_path = cached_source_path(video_id)
 
-    if key_exists(r2_key) and _r2_size(r2_key) > 0:
-        log.info("Source already in R2, downloading: %s", r2_key)
-        download_file(r2_key, local_path)
+    if Path(local_path).exists() and Path(local_path).stat().st_size > 0:
+        log.info("Source already cached locally: %s", local_path)
+    elif await asyncio.to_thread(key_exists, r2_key) and await asyncio.to_thread(_r2_size, r2_key) > 0:
+        log.info("Source already in R2, downloading once to local cache: %s", r2_key)
+        await asyncio.to_thread(download_file, r2_key, local_path)
     else:
         log.info("Downloading source from YouTube: %s", youtube_url)
-        result = subprocess.run(
+        result = await asyncio.to_thread(
+            subprocess.run,
             [
                 *YTDLP_CMD,
                 "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
@@ -88,7 +98,7 @@ async def ensure_source(video_id: str, youtube_url: str) -> tuple[str, str]:
             raise RuntimeError(f"yt-dlp produced an empty file for {youtube_url}")
 
         log.info("Downloaded %s (%.1f MB)", youtube_url, size / 1_000_000)
-        upload_file(local_path, r2_key, "video/mp4")
+        await asyncio.to_thread(upload_file, local_path, r2_key, "video/mp4")
         update_video(video_id, source_r2_key=r2_key)
 
     return local_path, r2_key
@@ -191,10 +201,11 @@ async def ensure_audio(video_id: str, source_local: str) -> tuple[str, str]:
     r2_key = f"sources/{video_id}/audio.wav"
     audio_local = tempfile.mktemp(suffix=".wav")
 
-    if key_exists(r2_key):
-        download_file(r2_key, audio_local)
+    if await asyncio.to_thread(key_exists, r2_key):
+        await asyncio.to_thread(download_file, r2_key, audio_local)
     else:
-        result = subprocess.run(
+        result = await asyncio.to_thread(
+            subprocess.run,
             [
                 "ffmpeg", "-y", "-i", source_local,
                 "-ac", "1", "-ar", "16000",
@@ -207,7 +218,7 @@ async def ensure_audio(video_id: str, source_local: str) -> tuple[str, str]:
                 f"ffmpeg audio extract failed (exit {result.returncode}):\n"
                 + result.stderr.decode(errors="replace")[-2000:]
             )
-        upload_file(audio_local, r2_key, "audio/wav")
+        await asyncio.to_thread(upload_file, audio_local, r2_key, "audio/wav")
         update_video(video_id, audio_r2_key=r2_key)
 
     return audio_local, r2_key

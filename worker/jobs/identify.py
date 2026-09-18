@@ -13,6 +13,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from sources import ensure_source
+
 import httpx
 
 from config import OPENROUTER_API_KEY
@@ -45,7 +47,7 @@ def _summary(refined: list[dict], runtime: float) -> str:
     return (
         f"Found {len(refined)} clips — {counts['hero']} hero, {counts['strong']} strong, "
         f"{counts['decent']} decent, {counts['weak']} weak."
-        + (f" Top pick: Clip 1 · {refined[0]['hook_line']}." if refined else "")
+        + (f" Top pick: Clip 1 · {(refined[0].get('hook_line') or refined[0].get('text', '')[:90]).strip()}." if refined else "")
         + f" Runtime: {runtime:.0f}s."
     )
 
@@ -144,8 +146,8 @@ async def handle_identify_clips(job: dict) -> None:
         # transplant may put the payoff cut first), checklist, duration gate
         crafted = await craft_clips(
             candidates, sentences, feats, roles, OPENROUTER_API_KEY,
-            min_duration_s=preferences.get("min_duration_seconds"),
-            max_duration_s=preferences.get("max_duration_seconds"),
+            min_duration_s=6,
+            max_duration_s=preferences.get("max_duration_seconds") or 90,
         )
 
         # Stage 3 — Comparative Ranker: side-by-side ordering + overlap
@@ -158,8 +160,8 @@ async def handle_identify_clips(job: dict) -> None:
         # Audio Cut Finder: pure index lookups per chunk boundary
         refined = [find_cut_points(c, energy_index, diar_timeline) for c in ranked]
 
-        # Hook Writer (parallel fanout, capped)
-        refined = await write_hooks(refined, OPENROUTER_API_KEY, preferences.get("hook_style", ""))
+        # Hook Writer disabled for local mode.
+        # Crafter already provides hook_line, saving additional local LLM calls.
 
         # Persist clips to Supabase — ordered by rank, so row 0 is the top pick
         now = datetime.utcnow().isoformat()
@@ -168,7 +170,7 @@ async def handle_identify_clips(job: dict) -> None:
                 "id":                str(uuid.uuid4()),
                 "video_id":          video_id,
                 "user_id":           job["user_id"],
-                "hook":              c.get("hook_line", ""),
+                "hook":              (c.get("hook_line") or c.get("text", "")[:120]).strip(),
                 "text":              c.get("text", ""),
                 "cuts":              c.get("cuts", c.get("cuts_raw", [])),
                 "duration_sec":      c.get("duration_sec"),
@@ -232,8 +234,10 @@ async def handle_identify_clips(job: dict) -> None:
         if source_r2_key and saved_clips:
             source_local_thumb = tempfile.mktemp(suffix=".mp4")
             try:
-                log.info("Downloading source for thumbnail extraction: %s", source_r2_key)
-                download_file(source_r2_key, source_local_thumb)
+                log.info("Loading cached source for thumbnail extraction")
+                source_local_thumb, _ = await ensure_source(
+                    video_id, video.get("youtube_url") or ""
+                )
                 for saved, row in zip(saved_clips, clip_rows):
                     try:
                         cuts = row.get("cuts") or []
@@ -253,32 +257,12 @@ async def handle_identify_clips(job: dict) -> None:
             except Exception as dl_err:
                 log.warning("Source download for thumbnails failed: %s", dl_err)
             finally:
-                Path(source_local_thumb).unlink(missing_ok=True)
+                # Persistent source cache is intentionally kept for future jobs.
+                pass
 
-        # ── Portrait preview frame ────────────────────────────────────────────
-        # Pick the highest-scoring clip (first after score-sort), extract a
-        # face-centred 9:16 JPEG, and store it on the video row so the web UI
-        # can display it in the frame designer without triggering a full export.
-        if source_r2_key and saved_clips:
-            source_local_preview = tempfile.mktemp(suffix=".mp4")
-            try:
-                download_file(source_r2_key, source_local_preview)
-                best_clip_cuts = clip_rows[0].get("cuts") or []
-                if best_clip_cuts:
-                    preview_bytes = extract_portrait_preview(
-                        source_local_preview,
-                        float(best_clip_cuts[0]["start"]),
-                        float(best_clip_cuts[0]["end"]),
-                    )
-                    if preview_bytes:
-                        preview_r2_key = f"previews/{video_id}/portrait_preview.jpg"
-                        upload_bytes(preview_bytes, preview_r2_key, content_type="image/jpeg")
-                        update_video(video_id, portrait_preview_url=public_url(preview_r2_key))
-                        log.info("Portrait preview uploaded for video %s", video_id)
-            except Exception as preview_err:
-                log.warning("Portrait preview failed (non-fatal): %s", preview_err)
-            finally:
-                Path(source_local_preview).unlink(missing_ok=True)
+        # Portrait preview generation skipped here in local mode.
+        # A preview is already generated during transcription, avoiding
+        # another full source-video download from R2.
 
         update_video(video_id, status="ready")
 

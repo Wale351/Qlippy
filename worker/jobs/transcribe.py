@@ -23,7 +23,7 @@ from jobs.common import _build_diar_timeline, speaker_faces_key
 from storage.r2 import upload_bytes, public_url, get_presigned_url
 from db.supabase import (
     update_job, finish_job, update_video, get_video,
-    insert_transcript, insert_job, get_user_profile,
+    insert_transcript, insert_job, get_user_profile, get_transcript,
 )
 
 log = logging.getLogger(__name__)
@@ -118,6 +118,31 @@ async def handle_transcribe(job: dict) -> None:
     model_size   = payload.get("model_size", "large")
     job_id       = job["id"]
 
+    # Reuse an existing transcript unless a deliberate fresh transcription
+    # was explicitly requested.
+    if not payload.get("force_transcribe"):
+        existing = get_transcript(video_id)
+
+        if existing and existing.get("raw_words"):
+            log.info(
+                "Existing transcript found for video %s (%d words) — skipping transcription",
+                video_id,
+                len(existing.get("raw_words") or []),
+            )
+
+            finish_job(
+                job_id,
+                status="done",
+                finished_at=datetime.utcnow().isoformat(),
+                result={
+                    "transcript_id": existing["id"],
+                    "reused": True,
+                },
+            )
+
+            await _chain_identify_clips(job, video_id)
+            return
+
     update_job(job_id, status="processing", started_at=datetime.utcnow().isoformat())
     update_video(video_id, status="transcribing")
 
@@ -179,101 +204,50 @@ async def handle_transcribe(job: dict) -> None:
             # Step 2: extract audio
             audio_local, audio_r2_key = await ensure_audio(video_id, source_local)
 
-            # Step 3: presigned URL for Replicate
-            audio_url = get_presigned_url(audio_r2_key, expires_in=7200)
+            # Step 3: local transcription with MLX Whisper
+            import mlx_whisper
 
-            whisperx_model = WHISPERX_MODEL_SIZES.get(model_size, "large-v2")
-            log.info("Using WhisperX model: %s (size=%s)", whisperx_model, model_size)
+            local_model = "mlx-community/whisper-small-mlx"
+            log.info("Starting local MLX Whisper transcription: %s", local_model)
 
-            # Step 4: start WhisperX on Replicate
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                replicate_input: dict = {
-                    "audio_file":   audio_url,
-                    "align_output": True,
-                    "diarization":  bool(HUGGINGFACE_TOKEN),
-                    "language":     "en",
-                    "model_size":   whisperx_model,
-                }
-                if HUGGINGFACE_TOKEN:
-                    replicate_input["huggingface_access_token"] = HUGGINGFACE_TOKEN
-                replicate_payload = {
-                    "version": "655845d6190ef70573c669245f245892cd039df4b880a1e3a65852c09252f5cc",
-                    "input": replicate_input,
-                }
-                log.info("Starting Replicate WhisperX prediction (attempt %d/2)…", attempt)
-                resp = await client.post(
-                    "https://api.replicate.com/v1/predictions",
-                    headers={
-                        "Authorization": f"Token {REPLICATE_API_TOKEN}",
-                        "Content-Type": "application/json",
-                    },
-                    json=replicate_payload,
-                )
-                if not resp.is_success:
-                    log.error("Replicate error body: %s", resp.text)
-                resp.raise_for_status()
-                pred = resp.json()
-                pred_id = pred["id"]
-
-            log.info("Replicate prediction started: %s", pred_id)
-
-            # Step 5: poll until done (bounded — a stuck prediction must not hang
-            # the job forever; the deadline scales with content length so multi-hour
-            # videos get the transcription time they legitimately need)
-            poll_timeout_s = _replicate_poll_timeout(vid_dur)
-            poll_deadline = time.monotonic() + poll_timeout_s
-            async with httpx.AsyncClient(timeout=600.0) as client:
-                while True:
-                    if time.monotonic() > poll_deadline:
-                        raise RuntimeError(
-                            f"Replicate transcription timed out after {poll_timeout_s / 60:.0f} minutes"
-                        )
-                    r = await client.get(
-                        f"https://api.replicate.com/v1/predictions/{pred_id}",
-                        headers={"Authorization": f"Token {REPLICATE_API_TOKEN}"},
-                    )
-                    r.raise_for_status()
-                    pred = r.json()
-                    if pred["status"] == "succeeded":
-                        break
-                    elif pred["status"] in ("failed", "canceled"):
-                        raise RuntimeError(
-                            f"Replicate {pred['status']}: {pred.get('error', 'unknown error')}"
-                        )
-                    log.info("Waiting for Replicate (%s)…", pred["status"])
-                    await asyncio.sleep(8)
-
-            # Step 6: extract output
-            output    = pred["output"] or {}
-            raw_words = (
-                output.get("word_segments")
-                or output.get("words")
-                or _flatten_segment_words(output.get("segments", []))
+            output = await asyncio.to_thread(
+                mlx_whisper.transcribe,
+                audio_local,
+                path_or_hf_repo=local_model,
+                word_timestamps=True,
+                language="en",
+                verbose=False,
             )
-            segments  = output.get("segments") or []
-            language  = output.get("detected_language") or output.get("language") or "en"
 
-            full_text = " ".join(
-                (w.get("word") or w.get("text") or "") for w in raw_words
-            ).strip()
+            segments = output.get("segments") or []
+            raw_words = _flatten_segment_words(segments)
+            language = output.get("language") or "en"
+            full_text = (output.get("text") or "").strip()
 
             r2_key = f"transcripts/{video_id}/transcript.json"
             upload_bytes(
-                json.dumps({"language": language, "raw_words": raw_words, "segments": segments}).encode(),
-                r2_key, "application/json",
+                json.dumps({
+                    "language": language,
+                    "raw_words": raw_words,
+                    "segments": segments,
+                }).encode(),
+                r2_key,
+                "application/json",
             )
 
             transcript = insert_transcript({
-                "video_id":     video_id,
-                "user_id":      job["user_id"],
-                "language":     language,
-                "raw_words":    raw_words,
-                "segments":     segments,
-                "full_text":    full_text,
-                "r2_key":       r2_key,
-                "replicate_id": pred_id,
-                "model_size":   model_size,
+                "video_id": video_id,
+                "user_id": job["user_id"],
+                "language": language,
+                "raw_words": raw_words,
+                "segments": segments,
+                "full_text": full_text,
+                "r2_key": r2_key,
+                "replicate_id": None,
+                "model_size": "local-small",
             })
+
+            log.info("Local transcription complete: %d words", len(raw_words))
 
             # Speaker → face map over the whole source, for the export's face
             # tracker. Learning it from a 30 s clip is fooled by every reaction
@@ -308,9 +282,10 @@ async def handle_transcribe(job: dict) -> None:
             else:
                 log.exception("Transcription attempt 2/2 failed for job %s", job_id)
         finally:
-            for p in [source_local, audio_local]:
-                if p:
-                    Path(p).unlink(missing_ok=True)
+            # Keep source_local in the persistent local cache.
+            # Only temporary audio is removed.
+            if audio_local:
+                Path(audio_local).unlink(missing_ok=True)
 
         if last_error is None:
             break

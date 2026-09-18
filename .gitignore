@@ -54,3 +54,7 @@ Thumbs.db
 
 # ── Raw video sources (brand assets etc.) ─────────────────────
 *.mov
+
+# Local patch backups
+*.bak
+*.before-*

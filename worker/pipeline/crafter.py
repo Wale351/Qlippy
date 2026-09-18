@@ -26,7 +26,7 @@ MUST_HAVES = ["hook", "cold_start", "single_point", "clean_ending", "payoff"]
 SIGNALS    = ["emotion", "quotable", "contrast", "energy", "curiosity_gap", "low_filler"]
 
 # Hard duration gate (spec §3.1)
-GATE_MIN_S = 10.0
+GATE_MIN_S = 6.0
 GATE_MAX_S = 120.0
 
 MAX_PARALLEL      = 8
@@ -104,22 +104,41 @@ def _resolve_groups(
             lo, hi = int(group[0]), int(group[1])
         except (TypeError, ValueError):
             return None
+        # Repair reversed boundaries from smaller local models.
+        if lo > hi:
+            lo, hi = hi, lo
+
         lo, hi = max(0, lo), min(hi, max_idx)
         if lo > hi:
-            return None
-        norm.append([lo, hi])
+            continue
 
-    if not norm or len(norm) > MAX_GROUPS:
+        if [lo, hi] not in norm:
+            norm.append([lo, hi])
+
+    if not norm:
         return None
 
-    # No two groups may share sentences
-    spans = sorted(norm)
-    for (alo, ahi), (blo, bhi) in zip(spans, spans[1:]):
-        if blo <= ahi:
-            return None
-
     if not transplant:
-        norm = spans
+        # Sort and merge overlapping/adjacent ranges rather than rejecting them.
+        spans = sorted(norm)
+        merged: list[list[int]] = []
+
+        for lo, hi in spans:
+            if merged and lo <= merged[-1][1] + 1:
+                merged[-1][1] = max(merged[-1][1], hi)
+            else:
+                merged.append([lo, hi])
+
+        norm = merged
+    else:
+        # Preserve hook-transplant play order, but overlapping cuts are invalid.
+        spans = sorted(norm)
+        for (alo, ahi), (blo, bhi) in zip(spans, spans[1:]):
+            if blo <= ahi:
+                return None
+
+    if len(norm) > MAX_GROUPS:
+        return None
 
     cuts: list[dict[str, float]] = []
     text_parts: list[str] = []

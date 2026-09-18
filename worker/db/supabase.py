@@ -5,6 +5,7 @@ Uses service-role key (bypasses RLS) — worker has full access.
 
 from __future__ import annotations
 import os
+import time
 from supabase import create_client, Client
 
 _client: Client | None = None
@@ -130,8 +131,38 @@ def update_clip_thumbnail(clip_id: str, thumbnail_url: str) -> None:
 
 
 def insert_transcript(data: dict) -> dict:
-    res = get_db().table("transcripts").insert(data).execute()
-    return res.data[0]
+    """
+    Save transcript safely.
+    video_id is unique, so retries cannot create duplicate transcripts.
+    """
+    last_error = None
+
+    for attempt in range(3):
+        try:
+            res = (
+                get_db()
+                .table("transcripts")
+                .upsert(data, on_conflict="video_id")
+                .execute()
+            )
+            if res.data:
+                return res.data[0]
+        except Exception as e:
+            last_error = e
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+
+    # The DB may have committed even if the response connection dropped.
+    try:
+        existing = get_transcript(data["video_id"])
+        if existing:
+            return existing
+    except Exception:
+        pass
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("Transcript save failed")
 
 
 def insert_job(data: dict) -> dict:

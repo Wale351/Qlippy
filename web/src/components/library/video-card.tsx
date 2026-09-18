@@ -74,10 +74,18 @@ export function VideoCard({ video, collections, onDeleted, onMoved }: Props) {
     setShowReprocessConfirm(false);
     setReprocessing(true);
     try {
-      await fetch(`/api/videos/${video.id}/reprocess`, {
+      const endpoint = video.has_transcript
+        ? `/api/videos/${video.id}/identify-clips`
+        : `/api/videos/${video.id}/reprocess`;
+
+      await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model_size: "large" }),
+        body: JSON.stringify(
+          video.has_transcript
+            ? { keep_existing: false }
+            : { model_size: "large" }
+        ),
       });
       onDeleted();
     } finally {

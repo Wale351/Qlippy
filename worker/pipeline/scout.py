@@ -23,7 +23,7 @@ ARCHETYPES = {
 }
 
 MAX_PARALLEL_CHUNKS = 4
-TOP_K               = 40   # candidates passed on to the crafter
+TOP_K               = 10   # candidates passed on to the crafter
 MAX_SPAN_SENTENCES  = 80   # over-long spans are trimmed around the payoff
 
 SYSTEM_PROMPT = """\
@@ -142,7 +142,7 @@ async def scout_moments(
             try:
                 data = await call_agent(
                     "scout", system, user,
-                    api_key=api_key, temperature=0.3, max_tokens=8192,
+                    api_key=api_key, temperature=0.3, max_tokens=2048,
                 )
             except Exception as e:
                 # One bad chunk must not sink a long job — skip it and keep going
@@ -161,6 +161,19 @@ async def scout_moments(
                 continue
             seen.add(key)
             merged.append(m)
+
+    # Local quality filter:
+    # interviewer questions are useful context, but usually poor clip payoffs.
+    # Demote them instead of deleting them completely.
+    for m in merged:
+        payoff = m.get("payoff")
+        if isinstance(payoff, int) and 0 <= payoff < len(sentences):
+            feat = features[payoff] if payoff < len(features) else {}
+            speaker = feat.get("speaker")
+            payoff_text = sentences[payoff].get("text", "").strip()
+
+            if roles.get(speaker) == "host" and payoff_text.endswith("?"):
+                m["score"] = max(0, m["score"] - 35)
 
     merged.sort(key=lambda m: m["score"], reverse=True)
     del merged[TOP_K:]
