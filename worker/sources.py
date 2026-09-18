@@ -44,10 +44,13 @@ _yt_cookies_path: str | None = None
 
 
 def ytdlp_cookies_args() -> list[str]:
-    """Pass a cookies file to yt-dlp when YT_COOKIES_B64 is set (base64-encoded
-    cookies.txt from a logged-in YouTube account). Helps avoid YouTube's
-    'Sign in to confirm you're not a bot' challenge on datacenter IPs."""
+    """Use browser cookies locally, or a base64 cookies file when configured."""
     global _yt_cookies_path
+
+    browser = os.getenv("YT_COOKIES_FROM_BROWSER")
+    if browser:
+        return ["--cookies-from-browser", browser]
+
     b64 = os.getenv("YT_COOKIES_B64")
     if not b64:
         return []
