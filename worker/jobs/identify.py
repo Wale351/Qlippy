@@ -22,6 +22,7 @@ from pipeline.sentencize    import sentencize
 from pipeline.features      import enrich_sentences, infer_roles
 from pipeline.scout         import scout_moments
 from pipeline.crafter       import craft_clips
+from pipeline.moment_builder import build_moments
 from pipeline.ranker        import rank_clips
 from pipeline.cut_finder    import find_cut_points
 from pipeline.hook_writer   import write_hooks
@@ -142,6 +143,108 @@ async def handle_identify_clips(job: dict) -> None:
             sentences, feats, roles, OPENROUTER_API_KEY, scout_context,
         )
 
+        # Stage 1.5 — deterministic candidate quality filter.
+        # Keep strong Scout picks while demoting obvious weak conversational setup.
+        filtered_candidates = []
+
+        for c in candidates:
+            score = int(c.get("score") or 0)
+            lo = int(c.get("lo") or 0)
+            hi = int(c.get("hi") or lo)
+
+            first_text = ""
+            payoff_text = ""
+
+            if 0 <= lo < len(sentences):
+                first_text = str(sentences[lo].get("text") or "").strip()
+
+            payoff_idx = int(c.get("payoff") or lo)
+            if 0 <= payoff_idx < len(sentences):
+                payoff_text = str(sentences[payoff_idx].get("text") or "").strip()
+
+            first_lower = first_text.lower()
+
+            # Penalize generic interviewer/question setup.
+            if first_text.endswith("?"):
+                score -= 8
+
+            if first_lower.startswith(
+                (
+                    "so ",
+                    "and ",
+                    "but ",
+                    "yeah",
+                    "yes",
+                    "no ",
+                    "okay",
+                    "ok ",
+                    "what about",
+                    "how about",
+                    "do you",
+                    "did you",
+                    "are you",
+                    "have you",
+                )
+            ):
+                score -= 5
+
+            # Reward candidates with an actual concrete payoff line.
+            payoff_words = payoff_text.split()
+
+            if len(payoff_words) >= 6:
+                score += 3
+
+            if payoff_text and not payoff_text.endswith("?"):
+                score += 3
+
+            if any(
+                token in payoff_text.lower()
+                for token in (
+                    "because",
+                    "realized",
+                    "realised",
+                    "started",
+                    "never",
+                    "always",
+                    "remember",
+                    "love",
+                    "hate",
+                    "money",
+                    "family",
+                    "career",
+                    "life",
+                    "first time",
+                )
+            ):
+                score += 2
+
+            # Keep Scout's original candidate, but attach adjusted score for sorting.
+            c = dict(c)
+            c["quality_score"] = score
+            filtered_candidates.append(c)
+
+        filtered_candidates.sort(
+            key=lambda c: (
+                int(c.get("quality_score") or 0),
+                int(c.get("score") or 0),
+            ),
+            reverse=True,
+        )
+
+        # Keep a compact set of the best ingredients for Crafter.
+        # Never starve the pipeline if Scout only found a few.
+        keep_n = min(len(filtered_candidates), 7)
+        if keep_n >= 4:
+            candidates = filtered_candidates[:keep_n]
+        else:
+            candidates = filtered_candidates
+
+        log.info(
+            "Quality filter: kept %d of %d Scout candidates",
+            len(candidates),
+            len(filtered_candidates),
+        )
+
         # Stage 2 — Clip Crafter: exact boundaries in play order (hook
         # transplant may put the payoff cut first), checklist, duration gate
         crafted = await craft_clips(
@@ -150,11 +253,18 @@ async def handle_identify_clips(job: dict) -> None:
             max_duration_s=preferences.get("max_duration_seconds") or 90,
         )
 
-        # Stage 3 — Comparative Ranker: side-by-side ordering + overlap
-        # dedup, archetype diversity, and the user's max_clips cap
+        # Stage 3 — Moment Builder: group related scenes into complete Moments
+        moments = await build_moments(
+            crafted,
+            OPENROUTER_API_KEY,
+            video_duration_sec=video.get("duration_sec"),
+            sentences=sentences,
+        )
+
+        # Stage 4 — Rank the finished Moments
         max_clips = int(preferences.get("max_clips") or 10)
         ranked = await rank_clips(
-            crafted, OPENROUTER_API_KEY, scout_context["target_tones"], max_clips,
+            moments, OPENROUTER_API_KEY, scout_context["target_tones"], max_clips,
         )
 
         # Audio Cut Finder: pure index lookups per chunk boundary

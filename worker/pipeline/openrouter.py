@@ -23,6 +23,7 @@ OPENROUTER_BASE = os.getenv("LLM_BASE_URL", "http://127.0.0.1:11434/v1")
 AGENT_MODELS: dict[str, tuple[str, str]] = {
     "scout": ("qwen3:4b", "qwen3:4b"),
     "crafter": ("qwen3:4b", "qwen3:4b"),
+    "moment_builder": ("qwen3:4b", "qwen3:4b"),
     "ranker": ("qwen3:4b", "qwen3:4b"),
     "reader": ("qwen3:4b", "qwen3:4b"),
     "tension": ("qwen3:4b", "qwen3:4b"),

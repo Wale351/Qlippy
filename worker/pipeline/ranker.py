@@ -15,7 +15,8 @@ from .openrouter import call_agent
 
 log = logging.getLogger(__name__)
 
-MAX_OVERLAP_FRACTION = 0.4    # source-time overlap above this ⇒ duplicate moment
+MAX_OVERLAP_FRACTION = 0.4
+DISTINCT_TOPIC_OVERLAP_FRACTION = 0.75    # source-time overlap above this ⇒ duplicate moment
 TEXT_PREVIEW_CHARS   = 600
 
 SYSTEM_PROMPT = """\
@@ -46,6 +47,21 @@ def _overlap_fraction(a: list[dict], b: list[dict]) -> float:
     dur_b = sum(c["end"] - c["start"] for c in b)
     shorter = min(dur_a, dur_b)
     return inter / shorter if shorter > 0 else 1.0
+
+
+def _same_topic(a: dict, b: dict) -> bool:
+    ta = str(a.get("moment_topic") or "").strip().lower()
+    tb = str(b.get("moment_topic") or "").strip().lower()
+
+    if not ta or not tb:
+        return False
+
+    if ta == tb:
+        return True
+
+    # Catch small wording variations like:
+    # "love life" vs "central cee love life"
+    return ta in tb or tb in ta
 
 
 def _fallback_order(clips: list[dict]) -> list[int]:
@@ -85,11 +101,30 @@ def _apply_constraints(
     arch_cap = max(2, (max_clips + 1) // 2)
 
     def non_duplicate(i: int, kept: list[int]) -> bool:
-        return all(
-            _overlap_fraction(clips[i]["cuts_raw"], clips[k]["cuts_raw"])
-            <= MAX_OVERLAP_FRACTION
-            for k in kept
-        )
+        for k in kept:
+            overlap = _overlap_fraction(
+                clips[i]["cuts_raw"],
+                clips[k]["cuts_raw"],
+            )
+
+            # Same-topic Moments are held to the stricter duplicate threshold.
+            # Distinct topics may share setup/context without being duplicates.
+            limit = (
+                MAX_OVERLAP_FRACTION
+                if _same_topic(clips[i], clips[k])
+                else DISTINCT_TOPIC_OVERLAP_FRACTION
+            )
+
+            if overlap > limit:
+                log.info(
+                    "Ranker dropped duplicate Moment: overlap %.0f%%, topics %r vs %r",
+                    overlap * 100,
+                    clips[i].get("moment_topic"),
+                    clips[k].get("moment_topic"),
+                )
+                return False
+
+        return True
 
     kept: list[int] = []
     arch_counts: dict[str, int] = {}
