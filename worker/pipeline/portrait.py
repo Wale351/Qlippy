@@ -26,7 +26,8 @@ from pipeline.memlog import log_rss
 log = logging.getLogger(__name__)
 
 OUT_W, OUT_H     = 1080, 1920
-SCAN_FPS         = 4       # frames/sec piped from ffmpeg for analysis
+SCAN_FPS         = 4       # full/fallback analysis
+FAST_SCAN_FPS    = 3       # stored speaker bindings available
 SCAN_W           = 320     # resize width for detection
 
 EMA_ALPHA        = 0.15    # position smoothing (lower = smoother, less responsive)
@@ -84,6 +85,7 @@ def _venc() -> list[str]:
 # ── InsightFace singleton ─────────────────────────────────────────────────────
 
 _face_app = None
+_face_app_fast = None
 
 def _get_face_app():
     global _face_app
@@ -92,6 +94,15 @@ def _get_face_app():
         _face_app = FaceAnalysis(allowed_modules=["detection", "recognition", "landmark_2d_106"])
         _face_app.prepare(ctx_id=0, det_size=(320, 320))
     return _face_app
+
+
+def _get_face_app_fast():
+    global _face_app_fast
+    if _face_app_fast is None:
+        from insightface.app import FaceAnalysis
+        _face_app_fast = FaceAnalysis(allowed_modules=["detection", "recognition"])
+        _face_app_fast.prepare(ctx_id=0, det_size=(320, 320))
+    return _face_app_fast
 
 
 # ── Video meta ────────────────────────────────────────────────────────────────
@@ -257,6 +268,7 @@ def _scan_source(
     fps: float = SCAN_FPS,
     start: float = 0.0,
     duration: float | None = None,
+    use_fast: bool = False,
 ) -> list[dict]:
     """
     Pipe the source (or the window [start, start+duration]) at `fps` and run
@@ -269,7 +281,7 @@ def _scan_source(
     scan_h = int(src_h * scale)
     fsize  = SCAN_W * scan_h * 3
 
-    face_app = _get_face_app()
+    face_app = _get_face_app_fast() if use_fast else _get_face_app()
 
     cmd = [
         "ffmpeg",
@@ -331,7 +343,8 @@ def _scan_source(
             proc.kill()
             proc.wait()
 
-    _mouth_activity(records)
+    if not use_fast:
+        _mouth_activity(records)
     log.debug("Scanned %d frames from %s", frame_idx, source)
     return records
 
@@ -391,7 +404,7 @@ def _bind_speakers(
     return bound
 
 
-SPEAKER_FACES_VERSION = 2   # bump when the binding method changes; stale stored maps are rebuilt
+SPEAKER_FACES_VERSION = 3   # bump when the binding method changes; stale stored maps are rebuilt
 BIND_BURST_S        = 1.5   # seconds sampled per burst — enough for mouth activity at SCAN_FPS
 BIND_BURSTS_PER_SPK = 30    # bursts per speaker, spread across their segments
 
@@ -441,16 +454,41 @@ def bind_speakers_from_source(
     bound = _bind_speakers(records, diar_timeline)
     out = {spk: vec.tolist() for spk, vec in bound.items() if vec is not None}
 
-    # Two speakers bound to the same face means the cutaways won anyway.
+    # Two speakers bound to the same face is not a trustworthy binding.
+    # Drop both so exports fall back to the safer local/full analysis path.
     ids = sorted(out)
+    ambiguous: set[str] = set()
     for i, a in enumerate(ids):
         for b in ids[i + 1:]:
             sim = _cos_sim(np.array(out[a]), np.array(out[b]))
             if sim > 0.8:
-                log.warning("Speaker binding ambiguous: %s and %s map to the same face (cos %.2f)", a, b, sim)
+                log.warning(
+                    "Speaker binding ambiguous: %s and %s map to the same face (cos %.2f)",
+                    a, b, sim,
+                )
+                ambiguous.update((a, b))
+
+    for spk in ambiguous:
+        out.pop(spk, None)
     log.info("Speaker→face binding from %d scanned frames: %s", len(records),
              {k: "bound" for k in out} or "none")
     return {"version": SPEAKER_FACES_VERSION, "speakers": out}
+
+
+def _has_complete_preloaded_bindings(
+    preloaded: dict | None,
+    diar_timeline: list,
+) -> bool:
+    """True when every diarised speaker already has a stored face embedding."""
+    if not preloaded or not diar_timeline:
+        return False
+
+    speakers = preloaded.get("speakers", preloaded)
+    if not speakers:
+        return False
+
+    diar_speakers = {spk for _, _, spk in diar_timeline if spk}
+    return bool(diar_speakers) and diar_speakers.issubset(set(speakers))
 
 
 def _merge_bindings(
@@ -727,8 +765,12 @@ def _build_timeline(
     Converts per-frame records into timeline segments [{start, end, mode, crop, crops}].
     Applies hysteresis and merges short segments.
     """
-    bound = _merge_bindings(_bind_speakers(records, diar_timeline), speaker_faces)
-    cast  = _main_cast(records)
+    if _has_complete_preloaded_bindings(speaker_faces, diar_timeline):
+        bound = _merge_bindings({}, speaker_faces)
+    else:
+        bound = _merge_bindings(_bind_speakers(records, diar_timeline), speaker_faces)
+
+    cast = _main_cast(records)
 
     # Panel dimensions for split mode: each face gets a 9:8 crop → scales to 1080×960
     panel_crop_h = (int(src_h * 0.6) // 2) * 2
@@ -1011,11 +1053,16 @@ def _cache_path(source: str) -> str:
     return source + ".portrait_timeline.json"
 
 
-def _cache_params(crop_w: int, crop_h: int) -> dict:
+def _cache_params(
+    crop_w: int,
+    crop_h: int,
+    scan_fps: float = SCAN_FPS,
+    fast_scan: bool = False,
+) -> dict:
     """Tuning constants baked into a timeline — a cache is only valid if these match."""
     return {
         "crop_w": crop_w, "crop_h": crop_h,
-        "scan_fps": SCAN_FPS, "scan_w": SCAN_W,
+        "scan_fps": scan_fps, "fast_scan": fast_scan, "scan_w": SCAN_W,
         "ema_alpha": EMA_ALPHA, "dead_zone": DEAD_ZONE_PX,
         "keyframe_dist": KEYFRAME_DIST, "snap_frac": SNAP_FRAC,
         "fill": PORTRAIT_FILL, "eye_in_face": EYE_IN_FACE, "eye_target_y": EYE_TARGET_Y,
@@ -1101,8 +1148,13 @@ def _analyze_source(
     When analysis_out_path is set, also writes the per-frame scan (face boxes +
     active speaker) to that path as the persisted analysis artifact.
     """
+    fast_scan = _has_complete_preloaded_bindings(
+        speaker_faces, diar_timeline or []
+    )
+    scan_fps = FAST_SCAN_FPS if fast_scan else SCAN_FPS
+
     cache  = _cache_path(source)
-    params = _cache_params(crop_w, crop_h)
+    params = _cache_params(crop_w, crop_h, scan_fps, fast_scan)
     if os.path.exists(cache):
         try:
             with open(cache) as f:
@@ -1130,8 +1182,18 @@ def _analyze_source(
         finally:
             _cleanup([audio_tmp])
 
+    if fast_scan:
+        log.info(
+            "Using fast portrait scan: stored speaker bindings are complete (%.1f FPS)",
+            scan_fps,
+        )
+
     log_rss("portrait pre-scan")
-    records  = _scan_source(source, src_w, src_h, diar)
+    records = _scan_source(
+        source, src_w, src_h, diar,
+        fps=scan_fps,
+        use_fast=fast_scan,
+    )
     log_rss(f"portrait scan done ({len(records)} records)")
     timeline = _build_timeline(records, diar, src_w, src_h, crop_w, crop_h, speaker_faces=speaker_faces)
     slim     = _slim_records(records)
