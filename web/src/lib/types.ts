@@ -87,6 +87,13 @@ export interface Clip {
   score: number | null;
   tone: Tone | null;
   sentence_groups: number[][] | null;
+  stitched: boolean;
+  chunks: {
+    start_ms: number;
+    end_ms: number;
+    crosstalk_flagged?: boolean;
+  }[];
+  crosstalk_flagged: boolean;
   reasoning: string | null;
   source: "ai" | "manual";
   notes: string | null;

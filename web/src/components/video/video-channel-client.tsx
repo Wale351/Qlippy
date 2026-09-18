@@ -19,6 +19,7 @@ import {
   ArrowLeft, Scissors, Download, Clock,
   Film, Play, Pause, Loader2, RefreshCw, Sparkles, AlertCircle,
   Copy, CheckCheck, ArrowUpDown, ChevronDown, CheckSquare, X, History, FileText,
+  Pencil, Plus, Trash2, Save, ArrowUp, ArrowDown,
 } from "lucide-react";
 import type { PresetConfig } from "@/lib/types";
 
@@ -41,7 +42,12 @@ interface Props {
 }
 
 export function VideoChannelClient({ video, transcript, clips, clipExports, pendingExports }: Props) {
+  const [localClips, setLocalClips] = useState<Clip[]>(clips);
   const [exportClip, setExportClip] = useState<Clip | null>(null);
+
+  useEffect(() => {
+    setLocalClips(clips);
+  }, [clips]);
   const [localExports, setLocalExports] = useState<Record<string, ExportInfo[]>>(clipExports);
   const [exportingClips, setExportingClips] = useState<Map<string, string>>(
     () => new Map(pendingExports.map((e) => [e.clip_id, e.updated_at])),
@@ -215,12 +221,12 @@ export function VideoChannelClient({ video, transcript, clips, clipExports, pend
     setTimeout(() => setBulkNotice(null), 5000);
   };
 
-  const totalDuration = clips.reduce((sum, c) => sum + c.cuts.reduce((s, cut) => s + (cut.end - cut.start), 0), 0);
-  const maxClipEnd = clips.length > 0 ? Math.max(...clips.flatMap((c) => c.cuts.map((cut) => cut.end))) : 0;
+  const totalDuration = localClips.reduce((sum, c) => sum + c.cuts.reduce((s, cut) => s + (cut.end - cut.start), 0), 0);
+  const maxClipEnd = localClips.length > 0 ? Math.max(...localClips.flatMap((c) => c.cuts.map((cut) => cut.end))) : 0;
   const videoDuration = video.duration_sec ?? (maxClipEnd > 0 ? maxClipEnd : null);
   const coverage = videoDuration && totalDuration > 0 ? Math.min(Math.round((totalDuration / videoDuration) * 100), 100) : null;
 
-  const sortedClips = [...clips].sort((a, b) => {
+  const sortedClips = [...localClips].sort((a, b) => {
     if (sortBy === "duration") {
       const da = a.cuts.reduce((s, c) => s + (c.end - c.start), 0);
       const db = b.cuts.reduce((s, c) => s + (c.end - c.start), 0);
@@ -417,6 +423,11 @@ export function VideoChannelClient({ video, transcript, clips, clipExports, pend
                   exportStartedAt={exportingClips.get(clip.id) ?? null}
                   onExport={() => setExportClip(clip)}
                   onSeek={handleSeek}
+                  onClipUpdated={(updated) => {
+                    setLocalClips((prev) =>
+                      prev.map((item) => item.id === updated.id ? updated : item),
+                    );
+                  }}
                   selected={selectMode ? selectedIds.has(clip.id) : undefined}
                   onToggleSelect={selectMode ? () => toggleSelected(clip.id) : undefined}
                 />
@@ -616,6 +627,7 @@ function ClipPreviewCard({
   exportStartedAt,
   onExport,
   onSeek,
+  onClipUpdated,
   selected,
   onToggleSelect,
 }: {
@@ -625,6 +637,7 @@ function ClipPreviewCard({
   exportStartedAt: string | null;
   onExport: () => void;
   onSeek: (seconds: number) => void;
+  onClipUpdated: (clip: Clip) => void;
   selected?: boolean;
   onToggleSelect?: () => void;
 }) {
@@ -632,6 +645,12 @@ function ClipPreviewCard({
   const [playing, setPlaying] = useState(false);
   const [hookCopied, setHookCopied] = useState(false);
   const [showScript, setShowScript] = useState(false);
+  const [showMomentEditor, setShowMomentEditor] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editingCuts, setEditingCuts] = useState(
+    clip.cuts.map((cut) => ({ start: cut.start, end: cut.end })),
+  );
   const [showPublishingPack, setShowPublishingPack] = useState(false);
   const [packLoading, setPackLoading] = useState(false);
   const [packError, setPackError] = useState<string | null>(null);
@@ -739,6 +758,78 @@ function ClipPreviewCard({
     navigator.clipboard.writeText(value);
     setPackCopied(key);
     setTimeout(() => setPackCopied(null), 1800);
+  };
+
+  const updateEditingCut = (
+    index: number,
+    field: "start" | "end",
+    value: number,
+  ) => {
+    setEditingCuts((prev) =>
+      prev.map((cut, i) =>
+        i === index ? { ...cut, [field]: value } : cut,
+      ),
+    );
+  };
+
+  const moveEditingCut = (index: number, direction: -1 | 1) => {
+    setEditingCuts((prev) => {
+      const nextIndex = index + direction;
+      if (nextIndex < 0 || nextIndex >= prev.length) return prev;
+
+      const next = [...prev];
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      return next;
+    });
+  };
+
+  const removeEditingCut = (index: number) => {
+    setEditingCuts((prev) => {
+      if (prev.length <= 1) return prev;
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
+  const addEditingCut = () => {
+    setEditingCuts((prev) => {
+      const lastEnd = prev.length ? prev[prev.length - 1].end : 0;
+      const start = Math.max(0, lastEnd);
+      const maxEnd = video.duration_sec ?? start + 10;
+      const end = Math.min(start + 10, maxEnd);
+
+      return [...prev, { start, end: end > start ? end : start + 1 }];
+    });
+  };
+
+  const saveMomentEdit = async () => {
+    setEditSaving(true);
+    setEditError(null);
+
+    try {
+      const res = await fetch(`/api/clips/${clip.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cuts: editingCuts }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to save Moment");
+      }
+
+      onClipUpdated(data as Clip);
+
+      setTitleOptions([]);
+      setDescriptionOptions([]);
+      setOverlayOptions([]);
+      setShowPublishingPack(false);
+      setShowMomentEditor(false);
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : "Failed to save Moment");
+    } finally {
+      setEditSaving(false);
+    }
   };
 
   return (
@@ -963,6 +1054,25 @@ function ClipPreviewCard({
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
+                    setEditingCuts(
+                      clip.cuts.map((cut) => ({
+                        start: cut.start,
+                        end: cut.end,
+                      })),
+                    );
+                    setEditError(null);
+                    setShowMomentEditor((v) => !v);
+                  }}
+                  className="flex-shrink-0 flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-semibold transition-all active:scale-95"
+                  style={{ background: "rgba(255,255,255,0.14)", color: "white" }}
+                >
+                  <Pencil className="w-3 h-3" />
+                  Edit
+                </button>
+
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
                     togglePublishingPack();
                   }}
                   disabled={packLoading}
@@ -1010,6 +1120,159 @@ function ClipPreviewCard({
           </span>
         )}
       </div>
+
+      {showMomentEditor && (
+        <div
+          className="rounded-xl p-3 space-y-3"
+          style={{
+            background: "var(--yt-surface-2)",
+            border: "1px solid var(--yt-border)",
+          }}
+        >
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs font-semibold text-white">Edit Moment</p>
+              <p className="text-[10px]" style={{ color: "var(--yt-text-2)" }}>
+                Adjust, remove or reorder the scenes used in this Moment.
+              </p>
+            </div>
+
+            <button
+              onClick={() => setShowMomentEditor(false)}
+              style={{ color: "var(--yt-text-2)" }}
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="space-y-2">
+            {editingCuts.map((cut, i) => (
+              <div
+                key={i}
+                className="rounded-lg p-2 space-y-2"
+                style={{ background: "rgba(0,0,0,0.2)" }}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-semibold text-white">
+                    Scene {i + 1}
+                  </span>
+
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => moveEditingCut(i, -1)}
+                      disabled={i === 0}
+                      className="p-1 disabled:opacity-25"
+                      title="Move scene up"
+                    >
+                      <ArrowUp className="w-3 h-3" />
+                    </button>
+
+                    <button
+                      onClick={() => moveEditingCut(i, 1)}
+                      disabled={i === editingCuts.length - 1}
+                      className="p-1 disabled:opacity-25"
+                      title="Move scene down"
+                    >
+                      <ArrowDown className="w-3 h-3" />
+                    </button>
+
+                    <button
+                      onClick={() => removeEditingCut(i)}
+                      disabled={editingCuts.length <= 1}
+                      className="p-1 text-red-400 disabled:opacity-25"
+                      title="Remove scene"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="space-y-1">
+                    <span
+                      className="text-[9px] uppercase tracking-wide"
+                      style={{ color: "var(--yt-text-2)" }}
+                    >
+                      Start
+                    </span>
+
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.1}
+                      value={cut.start}
+                      onChange={(e) =>
+                        updateEditingCut(i, "start", Number(e.target.value))
+                      }
+                      className="w-full rounded-md px-2 py-1.5 text-xs text-white outline-none"
+                      style={{
+                        background: "rgba(0,0,0,0.35)",
+                        border: "1px solid var(--yt-border)",
+                      }}
+                    />
+                  </label>
+
+                  <label className="space-y-1">
+                    <span
+                      className="text-[9px] uppercase tracking-wide"
+                      style={{ color: "var(--yt-text-2)" }}
+                    >
+                      End
+                    </span>
+
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.1}
+                      value={cut.end}
+                      onChange={(e) =>
+                        updateEditingCut(i, "end", Number(e.target.value))
+                      }
+                      className="w-full rounded-md px-2 py-1.5 text-xs text-white outline-none"
+                      style={{
+                        background: "rgba(0,0,0,0.35)",
+                        border: "1px solid var(--yt-border)",
+                      }}
+                    />
+                  </label>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {editError && (
+            <p className="text-[11px] text-red-400">{editError}</p>
+          )}
+
+          <div className="flex items-center justify-between gap-2">
+            <button
+              onClick={addEditingCut}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium"
+              style={{
+                background: "rgba(255,255,255,0.08)",
+                color: "var(--yt-text)",
+              }}
+            >
+              <Plus className="w-3 h-3" />
+              Add scene
+            </button>
+
+            <button
+              onClick={saveMomentEdit}
+              disabled={editSaving}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold disabled:opacity-50"
+              style={{ background: "white", color: "#0a0a0a" }}
+            >
+              {editSaving ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <Save className="w-3 h-3" />
+              )}
+              {editSaving ? "Saving…" : "Save Moment"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {showPublishingPack && (
         <div
