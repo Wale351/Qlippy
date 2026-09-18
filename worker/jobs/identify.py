@@ -99,6 +99,11 @@ async def handle_identify_clips(job: dict) -> None:
             return
 
         diar_timeline = _build_diar_timeline(transcript)
+        log.info(
+            "Speaker timeline: %d segments, %d speakers",
+            len(diar_timeline),
+            len({speaker for _, _, speaker in diar_timeline}),
+        )
 
         # Audio Preprocessor — runs once, concurrent with the Reader LLM call.
         # Failure is non-fatal: cut finder falls back to exact word timestamps.

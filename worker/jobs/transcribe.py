@@ -19,6 +19,7 @@ from config import REPLICATE_API_TOKEN, HUGGINGFACE_TOKEN, WHISPERX_MODEL_SIZES
 from sources import ensure_source, ensure_audio
 from pipeline.clip_thumbnail import extract_face_from_image, extract_portrait_preview
 from pipeline.portrait import bind_speakers_from_source
+from pipeline.diarize import diarize_audio, attach_speakers_to_segments
 from jobs.common import _build_diar_timeline, speaker_faces_key
 from storage.r2 import upload_bytes, public_url, get_presigned_url
 from db.supabase import (
@@ -220,6 +221,32 @@ async def handle_transcribe(job: dict) -> None:
             )
 
             segments = output.get("segments") or []
+
+            # Local speaker diarization.
+            # MLX Whisper provides timestamps but no speaker identities.
+            try:
+                log.info("Starting local speaker diarization")
+                diar_timeline = await asyncio.to_thread(
+                    diarize_audio,
+                    audio_local,
+                )
+                segments = attach_speakers_to_segments(
+                    segments,
+                    diar_timeline,
+                )
+                speakers = sorted({speaker for _, _, speaker in diar_timeline})
+                log.info(
+                    "Speaker diarization complete: %d segments, %d speakers %s",
+                    len(diar_timeline),
+                    len(speakers),
+                    speakers,
+                )
+            except Exception as diar_error:
+                log.warning(
+                    "Speaker diarization failed (non-fatal): %s",
+                    diar_error,
+                )
+
             raw_words = _flatten_segment_words(segments)
             language = output.get("language") or "en"
             full_text = (output.get("text") or "").strip()
