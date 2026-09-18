@@ -33,12 +33,21 @@ POLL_INTERVAL_S = float(os.getenv("JOB_POLL_INTERVAL", "10"))
 # a bare create_task(), so a long-running job could be garbage-collected
 # mid-await, leaving its video/export pinned mid-progress forever.
 _tasks: set[asyncio.Task] = set()
+_service_tasks: set[asyncio.Task] = set()
+_active_keys: set[tuple[str, str]] = set()
 
 
 def _spawn(coro) -> asyncio.Task:
     task = asyncio.create_task(coro)
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
+    return task
+
+
+def _spawn_service(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _service_tasks.add(task)
+    task.add_done_callback(_service_tasks.discard)
     return task
 
 
@@ -59,9 +68,11 @@ async def execute(job: dict) -> None:
         return
     tag = f"{job['type']}:{job['id']}"
     log_rss(f"{tag} start")
+    key = (job["type"], str(job.get("entity_id") or ""))
     try:
         await handler(job)
     finally:
+        _active_keys.discard(key)
         log_rss(f"{tag} end")
         gc.collect()
         log_rss(f"{tag} post-gc")
@@ -73,9 +84,23 @@ def start_job(job: dict) -> bool:
     Returns True if this process won the claim, False if another worker
     (or the poll loop vs. an HTTP trigger) got there first.
     """
+    key = (job["type"], str(job.get("entity_id") or ""))
+
+    # Only one transcription / clip-analysis job per video at a time.
+    if job["type"] in {"transcribe", "identify_clips"} and key in _active_keys:
+        finish_job(
+            job["id"],
+            status="cancelled",
+            error_msg="Duplicate job skipped because this video is already processing.",
+        )
+        log.info("Skipped duplicate job %s for %s", job["id"], key)
+        return False
+
     claimed = claim_job(job["id"])
     if not claimed:
         return False
+
+    _active_keys.add(key)
     _spawn(execute(claimed))
     return True
 

@@ -119,10 +119,10 @@ async def _startup() -> None:
     except Exception as e:
         log.warning("Startup reaper failed (non-fatal): %s", e)
 
-    runner._spawn(runner.poll_queued_forever())
+    runner._spawn_service(runner.poll_queued_forever())
 
     if os.getenv("DAILY_CLEANUP_ENABLED", "false").lower() == "true":
-        runner._spawn(schedule_daily_cleanup())
+        runner._spawn_service(schedule_daily_cleanup())
         log.info("Daily cleanup scheduler enabled — runs at midnight UTC")
     else:
         log.info("Daily cleanup disabled (set DAILY_CLEANUP_ENABLED=true to enable)")

@@ -152,6 +152,41 @@ def _resolve_groups(
     return norm, cuts, " ".join(text_parts)
 
 
+def _expand_short_clip(
+    groups: list[list[int]],
+    candidate: dict,
+    sentences: list[dict],
+    min_duration: float,
+) -> tuple[list[list[int]], list[dict[str, float]], str] | None:
+    """Expand a too-short single-group clip with nearby sentences.
+
+    Prefer extending AFTER the selected hook first so the opening line stays intact.
+    Only search within the candidate plus the normal Crafter context window.
+    """
+    if len(groups) != 1:
+        return None
+
+    lo, hi = groups[0]
+    allowed_lo = max(0, candidate["lo"] - CONTEXT_SENTENCES)
+    allowed_hi = min(len(sentences) - 1, candidate["hi"] + CONTEXT_SENTENCES)
+
+    def duration(a: int, b: int) -> float:
+        return float(sentences[b]["end"]) - float(sentences[a]["start"])
+
+    # First extend forward to preserve the existing hook.
+    while duration(lo, hi) < min_duration and hi < allowed_hi:
+        hi += 1
+
+    # If still short, add setup from immediately before.
+    while duration(lo, hi) < min_duration and lo > allowed_lo:
+        lo -= 1
+
+    if duration(lo, hi) < min_duration:
+        return None
+
+    return _resolve_groups([[lo, hi]], sentences, False)
+
+
 def _dominant_speaker(groups: list[list[int]], features: list[dict]) -> str | None:
     spks = [
         features[i]["speaker"]
@@ -261,6 +296,22 @@ async def _craft_one(
                               f"Crafter: only {mh_count} of {len(MUST_HAVES)} must-haves")
 
     duration = sum(c["end"] - c["start"] for c in cuts_raw)
+
+    # Small local models sometimes identify the right moment but trim it down
+    # to only a few seconds. Expand with nearby context instead of immediately
+    # demoting an otherwise-good clip.
+    if duration < gate_min and not transplant:
+        expanded = _expand_short_clip(
+            groups, candidate, sentences, gate_min
+        )
+        if expanded is not None:
+            groups, cuts_raw, text = expanded
+            duration = sum(c["end"] - c["start"] for c in cuts_raw)
+            log.info(
+                "Crafter: candidate %s expanded to %.1fs",
+                candidate["candidate_id"], duration,
+            )
+
     if not (gate_min <= duration <= gate_max):
         return _fallback_clip(candidate, sentences, features,
                               f"Crafter: {duration:.1f}s is outside your {int(gate_min)}–{int(gate_max)}s range")

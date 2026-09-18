@@ -110,10 +110,18 @@ export function VideoChannelClient({ video, transcript, clips, clipExports, pend
     autoRetryFiredRef.current = true;
     const t = setTimeout(async () => {
       try {
-        await fetch(`/api/videos/${video.id}/reprocess`, {
+        const endpoint = transcript
+          ? `/api/videos/${video.id}/identify-clips`
+          : `/api/videos/${video.id}/reprocess`;
+
+        await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model_size: "large" }),
+          body: JSON.stringify(
+            transcript
+              ? { keep_existing: false }
+              : { model_size: "large" }
+          ),
         });
         setRetryCount((n) => {
           const next = n + 1;
