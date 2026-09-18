@@ -632,6 +632,31 @@ function ClipPreviewCard({
   const [playing, setPlaying] = useState(false);
   const [hookCopied, setHookCopied] = useState(false);
   const [showScript, setShowScript] = useState(false);
+  const [showPublishingPack, setShowPublishingPack] = useState(false);
+  const [packLoading, setPackLoading] = useState(false);
+  const [packError, setPackError] = useState<string | null>(null);
+  const [packCopied, setPackCopied] = useState<string | null>(null);
+  const [titleOptions, setTitleOptions] = useState<string[]>(
+    clip.social_title_options?.length
+      ? clip.social_title_options
+      : clip.social_title
+        ? [clip.social_title]
+        : [],
+  );
+  const [descriptionOptions, setDescriptionOptions] = useState<string[]>(
+    clip.social_description_options?.length
+      ? clip.social_description_options
+      : clip.social_description
+        ? [clip.social_description]
+        : [],
+  );
+  const [overlayOptions, setOverlayOptions] = useState<string[]>(
+    clip.overlay_text_options?.length
+      ? clip.overlay_text_options
+      : clip.overlay_text
+        ? [clip.overlay_text]
+        : [],
+  );
   const [thumbSrc, setThumbSrc] = useState<string | null>(clip.thumbnail_url || video.thumbnail_url || null);
   const isPending = exportStartedAt !== null;
 
@@ -667,6 +692,53 @@ function ClipPreviewCard({
     const v = videoRef.current;
     if (!v) return;
     v.paused ? v.play().catch(() => {}) : v.pause();
+  };
+
+  const generatePublishingPack = async () => {
+    setPackLoading(true);
+    setPackError(null);
+
+    try {
+      const res = await fetch(`/api/clips/${clip.id}/social-copy`, {
+        method: "POST",
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || "Publishing Pack generation failed");
+      }
+
+      setTitleOptions(data.titles ?? []);
+      setDescriptionOptions(data.descriptions ?? []);
+      setOverlayOptions(data.overlays ?? []);
+      setShowPublishingPack(true);
+    } catch (err) {
+      setPackError(err instanceof Error ? err.message : "Publishing Pack generation failed");
+      setShowPublishingPack(true);
+    } finally {
+      setPackLoading(false);
+    }
+  };
+
+  const togglePublishingPack = () => {
+    const hasPack =
+      titleOptions.length > 0 ||
+      descriptionOptions.length > 0 ||
+      overlayOptions.length > 0;
+
+    if (!hasPack) {
+      generatePublishingPack();
+      return;
+    }
+
+    setShowPublishingPack((v) => !v);
+  };
+
+  const copyPackText = (value: string, key: string) => {
+    navigator.clipboard.writeText(value);
+    setPackCopied(key);
+    setTimeout(() => setPackCopied(null), 1800);
   };
 
   return (
@@ -886,9 +958,30 @@ function ClipPreviewCard({
                 )}
               </div>
 
-              {/* Bottom: Clip button */}
+              {/* Bottom actions */}
               <div className="mt-3 flex-shrink-0 flex items-center justify-end gap-2">
-                <div />
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    togglePublishingPack();
+                  }}
+                  disabled={packLoading}
+                  className="flex-shrink-0 flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-semibold transition-all disabled:opacity-50 active:scale-95"
+                  style={{ background: "rgba(255,255,255,0.14)", color: "white" }}
+                >
+                  {packLoading ? (
+                    <>
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Generating…
+                    </>
+                  ) : (
+                    <>
+                      <FileText className="w-3 h-3" />
+                      Publishing pack
+                    </>
+                  )}
+                </button>
+
                 <button
                   onClick={(e) => { e.stopPropagation(); if (!isPending) onExport(); }}
                   disabled={isPending}
@@ -917,6 +1010,143 @@ function ClipPreviewCard({
           </span>
         )}
       </div>
+
+      {showPublishingPack && (
+        <div
+          className="rounded-xl p-3 space-y-4"
+          style={{
+            background: "var(--yt-surface-2)",
+            border: "1px solid var(--yt-border)",
+          }}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-semibold text-white">Publishing Pack</p>
+
+            <button
+              onClick={generatePublishingPack}
+              disabled={packLoading}
+              className="text-[10px] transition-opacity hover:opacity-100 disabled:opacity-40"
+              style={{ color: "var(--yt-text-2)", opacity: 0.8 }}
+            >
+              {packLoading ? "Regenerating…" : "Regenerate"}
+            </button>
+          </div>
+
+          {packError && (
+            <p className="text-[11px] text-red-400">{packError}</p>
+          )}
+
+          {titleOptions.length > 0 && (
+            <div>
+              <p
+                className="text-[10px] uppercase tracking-wide mb-1.5"
+                style={{ color: "var(--yt-text-2)" }}
+              >
+                Titles
+              </p>
+
+              <div className="space-y-1.5">
+                {titleOptions.map((value, i) => (
+                  <div
+                    key={`title-${i}`}
+                    className="flex items-start gap-2 rounded-lg p-2"
+                    style={{ background: "rgba(0,0,0,0.2)" }}
+                  >
+                    <p className="flex-1 text-xs text-white">{value}</p>
+
+                    <button
+                      onClick={() => copyPackText(value, `title-${i}`)}
+                      className="flex-shrink-0"
+                      style={{ color: "var(--yt-text-2)" }}
+                    >
+                      {packCopied === `title-${i}` ? (
+                        <CheckCheck className="w-3.5 h-3.5 text-green-400" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {descriptionOptions.length > 0 && (
+            <div>
+              <p
+                className="text-[10px] uppercase tracking-wide mb-1.5"
+                style={{ color: "var(--yt-text-2)" }}
+              >
+                Descriptions
+              </p>
+
+              <div className="space-y-1.5">
+                {descriptionOptions.map((value, i) => (
+                  <div
+                    key={`description-${i}`}
+                    className="flex items-start gap-2 rounded-lg p-2"
+                    style={{ background: "rgba(0,0,0,0.2)" }}
+                  >
+                    <p
+                      className="flex-1 text-[11px] leading-relaxed"
+                      style={{ color: "var(--yt-text)" }}
+                    >
+                      {value}
+                    </p>
+
+                    <button
+                      onClick={() => copyPackText(value, `description-${i}`)}
+                      className="flex-shrink-0"
+                      style={{ color: "var(--yt-text-2)" }}
+                    >
+                      {packCopied === `description-${i}` ? (
+                        <CheckCheck className="w-3.5 h-3.5 text-green-400" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {overlayOptions.length > 0 && (
+            <div>
+              <p
+                className="text-[10px] uppercase tracking-wide mb-1.5"
+                style={{ color: "var(--yt-text-2)" }}
+              >
+                Overlay Text
+              </p>
+
+              <div className="space-y-1.5">
+                {overlayOptions.map((value, i) => (
+                  <div
+                    key={`overlay-${i}`}
+                    className="flex items-center gap-2 rounded-lg p-2"
+                    style={{ background: "rgba(0,0,0,0.2)" }}
+                  >
+                    <p className="flex-1 text-xs text-white">{value}</p>
+
+                    <button
+                      onClick={() => copyPackText(value, `overlay-${i}`)}
+                      className="flex-shrink-0"
+                      style={{ color: "var(--yt-text-2)" }}
+                    >
+                      {packCopied === `overlay-${i}` ? (
+                        <CheckCheck className="w-3.5 h-3.5 text-green-400" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {showVersions && (
         <VersionPicker

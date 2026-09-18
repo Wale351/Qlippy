@@ -90,8 +90,12 @@ export interface Clip {
   reasoning: string | null;
   source: "ai" | "manual";
   notes: string | null;
-  social_title: string | null;       // AI-generated title for social
-  social_description: string | null; // AI-generated caption/description
+  social_title: string | null;       // selected/default social title
+  social_description: string | null; // selected/default social description
+  social_title_options: string[];
+  social_description_options: string[];
+  overlay_text_options: string[];
+  overlay_text: string | null;
   approved: boolean | null;          // null = not reviewed, true = approved, false = rejected
   series_id: string | null;          // group clips into a series
   thumbnail_url: string | null;      // face-forward frame extracted by worker

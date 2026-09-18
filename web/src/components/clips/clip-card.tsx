@@ -51,8 +51,12 @@ export function ClipCard({ clip, videoId, selected, onToggleSelect }: Props) {
   const [approved, setApproved]       = useState<boolean | null>(clip.approved ?? null);
   const [socialTitle, setSocialTitle] = useState(clip.social_title ?? "");
   const [socialDesc, setSocialDesc]   = useState(clip.social_description ?? "");
+  const [overlayText, setOverlayText] = useState(clip.overlay_text ?? "");
+  const [titleOptions, setTitleOptions] = useState<string[]>(clip.social_title_options ?? []);
+  const [descriptionOptions, setDescriptionOptions] = useState<string[]>(clip.social_description_options ?? []);
+  const [overlayOptions, setOverlayOptions] = useState<string[]>(clip.overlay_text_options ?? []);
   const [genLoading, setGenLoading]   = useState(false);
-  const [copied, setCopied]           = useState<"title" | "desc" | "hook" | null>(null);
+  const [copied, setCopied]           = useState<string | null>(null);
   const [showSocial, setShowSocial]   = useState(false);
   const [showTranscript, setShowTranscript] = useState(false);
   const [downloadTarget, setDownloadTarget] = useState<{ exportId: string; aspectRatio: string; versionLabel?: string } | null>(null);
@@ -161,6 +165,10 @@ export function ClipCard({ clip, videoId, selected, onToggleSelect }: Props) {
         const data = await res.json();
         setSocialTitle(data.title ?? "");
         setSocialDesc(data.description ?? "");
+        setOverlayText(data.overlay ?? "");
+        setTitleOptions(data.titles ?? []);
+        setDescriptionOptions(data.descriptions ?? []);
+        setOverlayOptions(data.overlays ?? []);
         setShowSocial(true);
       }
     } finally {
@@ -168,7 +176,7 @@ export function ClipCard({ clip, videoId, selected, onToggleSelect }: Props) {
     }
   };
 
-  const copyText = (text: string, which: "title" | "desc" | "hook") => {
+  const copyText = (text: string, which: string) => {
     navigator.clipboard.writeText(text);
     setCopied(which);
     setTimeout(() => setCopied(null), 2000);
@@ -176,6 +184,10 @@ export function ClipCard({ clip, videoId, selected, onToggleSelect }: Props) {
 
   const totalDuration = clip.cuts.reduce((sum, c) => sum + (c.end - c.start), 0);
   const score = clip.score ?? 0;
+
+  const displayTitles = titleOptions.length ? titleOptions : (socialTitle ? [socialTitle] : []);
+  const displayDescriptions = descriptionOptions.length ? descriptionOptions : (socialDesc ? [socialDesc] : []);
+  const displayOverlays = overlayOptions.length ? overlayOptions : (overlayText ? [overlayText] : []);
 
   return (
     <div className={`bg-[var(--yt-surface)] border rounded-xl p-5 hover:border-[var(--yt-hover)] transition-colors ${
@@ -319,31 +331,106 @@ export function ClipCard({ clip, videoId, selected, onToggleSelect }: Props) {
             </p>
           )}
 
-          {/* Social copy panel */}
-          {showSocial && (socialTitle || socialDesc) && (
-            <div className="mt-3 bg-[var(--yt-surface-2)]/50 border border-[var(--yt-border)] rounded-lg p-3 space-y-2">
-              {socialTitle && (
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[10px] text-[var(--yt-text-2)] mb-0.5">Title</p>
-                    <p className="text-xs text-white font-medium">{socialTitle}</p>
+          {/* Publishing Pack */}
+          {showSocial && (displayTitles.length > 0 || displayDescriptions.length > 0 || displayOverlays.length > 0) && (
+            <div className="mt-3 bg-[var(--yt-surface-2)]/50 border border-[var(--yt-border)] rounded-lg p-3 space-y-4">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold text-white flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-yellow-400" />
+                  Publishing Pack
+                </p>
+                <button
+                  onClick={handleGenerateSocial}
+                  disabled={genLoading}
+                  className="text-[10px] text-[var(--yt-text-2)] hover:text-white disabled:opacity-50"
+                >
+                  {genLoading ? "Regenerating…" : "Regenerate"}
+                </button>
+              </div>
+
+              {displayTitles.length > 0 && (
+                <div>
+                  <p className="text-[10px] uppercase tracking-wide text-[var(--yt-text-2)] mb-2">
+                    Titles
+                  </p>
+                  <div className="space-y-1.5">
+                    {displayTitles.map((title, i) => (
+                      <div
+                        key={`title-${i}`}
+                        className="flex items-start justify-between gap-2 rounded-md bg-black/20 p-2"
+                      >
+                        <p className="text-xs text-white font-medium">{title}</p>
+                        <button
+                          onClick={() => copyText(title, `title-${i}`)}
+                          className="text-[var(--yt-text-2)] hover:text-white flex-shrink-0"
+                        >
+                          {copied === `title-${i}` ? (
+                            <CheckCheck className="w-3.5 h-3.5 text-green-400" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    ))}
                   </div>
-                  <button onClick={() => copyText(socialTitle, "title")}
-                    className="text-[var(--yt-text-2)] hover:text-[var(--yt-text)] flex-shrink-0">
-                    {copied === "title" ? <CheckCheck className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  </button>
                 </div>
               )}
-              {socialDesc && (
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[10px] text-[var(--yt-text-2)] mb-0.5">Description</p>
-                    <p className="text-xs text-[var(--yt-text)]">{socialDesc}</p>
+
+              {displayDescriptions.length > 0 && (
+                <div>
+                  <p className="text-[10px] uppercase tracking-wide text-[var(--yt-text-2)] mb-2">
+                    Descriptions
+                  </p>
+                  <div className="space-y-1.5">
+                    {displayDescriptions.map((description, i) => (
+                      <div
+                        key={`desc-${i}`}
+                        className="flex items-start justify-between gap-2 rounded-md bg-black/20 p-2"
+                      >
+                        <p className="text-xs text-[var(--yt-text)] leading-relaxed">
+                          {description}
+                        </p>
+                        <button
+                          onClick={() => copyText(description, `desc-${i}`)}
+                          className="text-[var(--yt-text-2)] hover:text-white flex-shrink-0"
+                        >
+                          {copied === `desc-${i}` ? (
+                            <CheckCheck className="w-3.5 h-3.5 text-green-400" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    ))}
                   </div>
-                  <button onClick={() => copyText(socialDesc, "desc")}
-                    className="text-[var(--yt-text-2)] hover:text-[var(--yt-text)] flex-shrink-0">
-                    {copied === "desc" ? <CheckCheck className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  </button>
+                </div>
+              )}
+
+              {displayOverlays.length > 0 && (
+                <div>
+                  <p className="text-[10px] uppercase tracking-wide text-[var(--yt-text-2)] mb-2">
+                    Overlay Text
+                  </p>
+                  <div className="space-y-1.5">
+                    {displayOverlays.map((overlay, i) => (
+                      <div
+                        key={`overlay-${i}`}
+                        className="flex items-center justify-between gap-2 rounded-md bg-black/20 p-2"
+                      >
+                        <p className="text-xs text-white">{overlay}</p>
+                        <button
+                          onClick={() => copyText(overlay, `overlay-${i}`)}
+                          className="text-[var(--yt-text-2)] hover:text-white flex-shrink-0"
+                        >
+                          {copied === `overlay-${i}` ? (
+                            <CheckCheck className="w-3.5 h-3.5 text-green-400" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -386,7 +473,7 @@ export function ClipCard({ clip, videoId, selected, onToggleSelect }: Props) {
               className="flex items-center gap-1.5 px-3 py-1.5 bg-[var(--yt-surface-2)] hover:bg-[var(--yt-hover)] text-[var(--yt-text)] text-xs font-medium rounded-lg transition-colors disabled:opacity-50"
             >
               {genLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3 text-yellow-400" />}
-              {genLoading ? "Generating…" : socialTitle ? (showSocial ? "Hide copy" : "Show copy") : "Social copy"}
+              {genLoading ? "Generating…" : socialTitle ? (showSocial ? "Hide pack" : "Publishing pack") : "Publishing pack"}
             </button>
 
             {/* Approve / Reject */}
