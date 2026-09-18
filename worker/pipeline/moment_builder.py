@@ -383,7 +383,6 @@ def _build_moment(
 
 async def build_moments(
     scenes: list[dict[str, Any]],
-    api_key: str,
     video_duration_sec: float | None = None,
     sentences: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
@@ -416,7 +415,6 @@ async def build_moments(
             "moment_builder",
             SYSTEM_PROMPT,
             user,
-            api_key=api_key,
             temperature=0.2,
             max_tokens=2048,
         )

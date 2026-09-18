@@ -17,7 +17,6 @@ from sources import ensure_source
 
 import httpx
 
-from config import OPENROUTER_API_KEY
 from pipeline.sentencize    import sentencize
 from pipeline.features      import enrich_sentences, infer_roles
 from pipeline.scout         import scout_moments
@@ -147,7 +146,7 @@ async def handle_identify_clips(job: dict) -> None:
         }
         update_video(video_id, processing_stage="finding_moments")
         candidates = await scout_moments(
-            sentences, feats, roles, OPENROUTER_API_KEY, scout_context,
+            sentences, feats, roles, scout_context,
         )
 
         # Stage 1.5 — deterministic candidate quality filter.
@@ -256,7 +255,7 @@ async def handle_identify_clips(job: dict) -> None:
         # transplant may put the payoff cut first), checklist, duration gate
         update_video(video_id, processing_stage="crafting_scenes")
         crafted = await craft_clips(
-            candidates, sentences, feats, roles, OPENROUTER_API_KEY,
+            candidates, sentences, feats, roles,
             min_duration_s=6,
             max_duration_s=preferences.get("max_duration_seconds") or 90,
         )
@@ -265,7 +264,6 @@ async def handle_identify_clips(job: dict) -> None:
         update_video(video_id, processing_stage="building_moments")
         moments = await build_moments(
             crafted,
-            OPENROUTER_API_KEY,
             video_duration_sec=video.get("duration_sec"),
             sentences=sentences,
         )
@@ -274,7 +272,7 @@ async def handle_identify_clips(job: dict) -> None:
         max_clips = int(preferences.get("max_clips") or 10)
         update_video(video_id, processing_stage="ranking_moments")
         ranked = await rank_clips(
-            moments, OPENROUTER_API_KEY, scout_context["target_tones"], max_clips,
+            moments, scout_context["target_tones"], max_clips,
         )
 
         # Audio Cut Finder: pure index lookups per chunk boundary

@@ -116,7 +116,6 @@ async def scout_moments(
     sentences: list[dict[str, Any]],
     features: list[dict[str, Any]],
     roles: dict[str, str],
-    api_key: str,
     context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """
@@ -142,7 +141,7 @@ async def scout_moments(
             try:
                 data = await call_agent(
                     "scout", system, user,
-                    api_key=api_key, temperature=0.3, max_tokens=2048,
+                    temperature=0.3, max_tokens=2048,
                 )
             except Exception as e:
                 # One bad chunk must not sink a long job — skip it and keep going

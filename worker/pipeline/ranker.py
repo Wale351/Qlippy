@@ -153,7 +153,6 @@ def _apply_constraints(
 
 async def rank_clips(
     clips: list[dict[str, Any]],
-    api_key: str,
     target_tones: list[str] | None = None,
     max_clips: int = 10,
 ) -> list[dict[str, Any]]:

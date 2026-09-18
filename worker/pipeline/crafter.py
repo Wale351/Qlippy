@@ -257,7 +257,6 @@ async def _craft_one(
     sentences: list[dict],
     features: list[dict],
     roles: dict[str, str],
-    api_key: str,
     sem: asyncio.Semaphore,
     gate_min: float,
     gate_max: float,
@@ -278,7 +277,7 @@ async def _craft_one(
     async with sem:
         data = await call_agent(
             "crafter", system, user,
-            api_key=api_key, temperature=0.2, max_tokens=2048,
+            temperature=0.2, max_tokens=2048,
         )
     if not isinstance(data, dict) or not data.get("keep"):
         why = str((data or {}).get("reasoning") or "") if isinstance(data, dict) else ""
@@ -389,7 +388,6 @@ async def craft_clips(
     sentences: list[dict[str, Any]],
     features: list[dict[str, Any]],
     roles: dict[str, str],
-    api_key: str,
     min_duration_s: float | None = None,
     max_duration_s: float | None = None,
 ) -> list[dict[str, Any]]:
@@ -403,7 +401,7 @@ async def craft_clips(
 
     results = await asyncio.gather(
         *(
-            _craft_one(c, sentences, features, roles, api_key, sem, gate_min, gate_max)
+            _craft_one(c, sentences, features, roles, sem, gate_min, gate_max)
             for c in candidates
         ),
         return_exceptions=True,

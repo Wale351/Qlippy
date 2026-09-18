@@ -79,7 +79,7 @@ async def call_agent(
     agent: str,
     system: str,
     user: str,
-    api_key: str,
+    api_key: str | None = None,
     temperature: float = 0.3,
     max_tokens: int = 4096,
 ) -> Any:
