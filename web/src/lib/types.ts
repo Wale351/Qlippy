@@ -20,8 +20,14 @@ export interface Collection {
 export interface Video {
   id: string;
   user_id: string;
-  youtube_url: string;
-  youtube_id: string;
+  source_url: string | null;
+  source_type: string | null;
+  source_id: string | null;
+
+  // Legacy compatibility fields.
+  youtube_url: string | null;
+  youtube_id: string | null;
+
   title: string;
   thumbnail_url: string | null;
   duration_sec: number | null;
@@ -33,6 +39,7 @@ export interface Video {
   face_url: string | null;
   collection_id: string | null;
   source_r2_key: string | null;
+  source_playback_url?: string | null;
   audio_r2_key: string | null;
   portrait_preview_url: string | null;
   has_transcript?: boolean;

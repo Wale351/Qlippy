@@ -21,7 +21,7 @@ from storage.r2 import upload_file, download_file, key_exists
 # Run yt-dlp as a module of *this* interpreter, never a bare "yt-dlp" from
 # PATH: that resolved to a stale system copy once and 403'd every download.
 YTDLP_CMD = [sys.executable, "-m", "yt_dlp"]
-from db.supabase import update_video
+from db.supabase import update_video, get_video
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +66,13 @@ async def ensure_source(video_id: str, youtube_url: str, resolution: int = 720) 
     Returns (local_temp_path, r2_key).
     Idempotent — if already in R2 (and non-empty), downloads from there instead.
     """
-    r2_key = f"sources/{video_id}/source.mp4"
+    canonical_r2_key = f"sources/{video_id}/source.mp4"
+
+    # Uploaded videos already have their original file in R2.
+    # URL imports start without source_r2_key and are cached to the canonical key.
+    video_row = get_video(video_id) or {}
+    r2_key = video_row.get("source_r2_key") or canonical_r2_key
+
     local_path = cached_source_path(video_id)
 
     if Path(local_path).exists() and Path(local_path).stat().st_size > 0:
@@ -75,12 +81,17 @@ async def ensure_source(video_id: str, youtube_url: str, resolution: int = 720) 
         log.info("Source already in R2, downloading once to local cache: %s", r2_key)
         await asyncio.to_thread(download_file, r2_key, local_path)
     else:
-        log.info("Downloading source from YouTube: %s", youtube_url)
+        if not youtube_url:
+            raise RuntimeError("No source URL or uploaded source file is available")
+
+        # URL import. Download through yt-dlp and cache under Qlippy's canonical key.
+        r2_key = canonical_r2_key
+        log.info("Downloading source video: %s", youtube_url)
         result = await asyncio.to_thread(
             subprocess.run,
             [
                 *YTDLP_CMD,
-                "--format", f"bestvideo[height<={resolution}][ext=mp4]+bestaudio[ext=m4a]/best[height<={resolution}][ext=mp4]/best[height<={resolution}]",
+                "--format", f"bestvideo[height<={resolution}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={resolution}]+bestaudio/best[height<={resolution}]/bestvideo+bestaudio/best",
                 "--merge-output-format", "mp4",
                 "--output", local_path,
                 "--no-playlist",
@@ -107,11 +118,123 @@ async def ensure_source(video_id: str, youtube_url: str, resolution: int = 720) 
     return local_path, r2_key
 
 
-async def download_and_stitch_cuts(youtube_url: str, cuts: list[dict]) -> str:
+
+async def _cut_uploaded_source(source_path: str, cuts: list[dict]) -> str:
+    """Cut uploaded/local source ranges and stitch them into one MP4."""
+    if not cuts:
+        raise RuntimeError("No clip cuts supplied")
+
+    out = tempfile.mktemp(suffix=".mp4")
+
+    # Check whether the source has audio.
+    probe = await asyncio.to_thread(
+        subprocess.run,
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=index",
+            "-of", "csv=p=0",
+            source_path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    has_audio = bool(probe.stdout.strip())
+
+    filters: list[str] = []
+    concat_inputs: list[str] = []
+
+    for i, cut in enumerate(cuts):
+        start = float(cut["start"])
+        end = float(cut["end"])
+
+        filters.append(
+            f"[0:v]trim=start={start}:end={end},setpts=PTS-STARTPTS[v{i}]"
+        )
+        concat_inputs.append(f"[v{i}]")
+
+        if has_audio:
+            filters.append(
+                f"[0:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[a{i}]"
+            )
+            concat_inputs.append(f"[a{i}]")
+
+    if has_audio:
+        filters.append(
+            "".join(concat_inputs)
+            + f"concat=n={len(cuts)}:v=1:a=1[outv][outa]"
+        )
+    else:
+        filters.append(
+            "".join(concat_inputs)
+            + f"concat=n={len(cuts)}:v=1:a=0[outv]"
+        )
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", source_path,
+        "-filter_complex", ";".join(filters),
+        "-map", "[outv]",
+    ]
+
+    if has_audio:
+        cmd += ["-map", "[outa]"]
+
+    cmd += [
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "18",
+    ]
+
+    if has_audio:
+        cmd += ["-c:a", "aac", "-b:a", "192k"]
+
+    cmd += ["-movflags", "+faststart", out]
+
+    result = await asyncio.to_thread(
+        subprocess.run,
+        cmd,
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        Path(out).unlink(missing_ok=True)
+        raise RuntimeError(
+            "ffmpeg failed while cutting uploaded video:\n"
+            + result.stderr[-2000:]
+        )
+
+    if not Path(out).exists() or Path(out).stat().st_size == 0:
+        raise RuntimeError("Uploaded video clip output was empty")
+
+    return out
+
+
+async def download_and_stitch_cuts(
+    youtube_url: str | None,
+    cuts: list[dict],
+    source_r2_key: str | None = None,
+) -> str:
     """
     Download only the cut time ranges from YouTube and stitch into one landscape MP4.
     Returns a local temp path. Caller is responsible for cleanup.
     """
+    # Uploaded videos have no external URL. Pull the original from R2 and
+    # perform the cuts locally instead of sending it through yt-dlp.
+    if not youtube_url:
+        if not source_r2_key:
+            raise RuntimeError("Uploaded video has no source_r2_key")
+
+        suffix = Path(source_r2_key).suffix or ".mp4"
+        uploaded_local = tempfile.mktemp(suffix=suffix)
+
+        try:
+            await asyncio.to_thread(download_file, source_r2_key, uploaded_local)
+            return await _cut_uploaded_source(uploaded_local, cuts)
+        finally:
+            Path(uploaded_local).unlink(missing_ok=True)
+
     segment_paths: list[str] = []
     try:
         for cut in cuts:
@@ -127,7 +250,7 @@ async def download_and_stitch_cuts(youtube_url: str, cuts: list[dict]) -> str:
                     subprocess.run,
                     [
                         *YTDLP_CMD,
-                        "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                        "--format", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
                         "--merge-output-format", "mp4",
                         "--download-sections", f"*{start}-{end}",
                         "--force-keyframes-at-cuts",

@@ -74,22 +74,34 @@ export function VideoChannelClient({ video, transcript, clips, clipExports, pend
   };
 
   const iframeRef     = useRef<HTMLIFrameElement>(null);
+  const videoRef      = useRef<HTMLVideoElement>(null);
   const topSectionRef = useRef<HTMLDivElement>(null);
   type SortKey = "sequence" | "duration" | "virality";
   const [sortBy, setSortBy]     = useState<SortKey>("sequence");
 
   const handleSeek = useCallback((seconds: number) => {
-    // Use the IFrame Player API (postMessage) so the embed seeks in place
-    // instead of reloading the whole player on every timestamp click.
     const win = iframeRef.current?.contentWindow;
-    if (win && video.youtube_id) {
+
+    if (
+      win &&
+      video.youtube_id &&
+      (video.source_type === "youtube" || !video.source_type)
+    ) {
       const cmd = (func: string, args: unknown[]) =>
         win.postMessage(JSON.stringify({ event: "command", func, args }), "*");
+
       cmd("seekTo", [Math.floor(seconds), true]);
       cmd("playVideo", []);
+    } else if (videoRef.current) {
+      videoRef.current.currentTime = Math.max(0, seconds);
+      videoRef.current.play().catch(() => {});
     }
-    topSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [video.youtube_id]);
+
+    topSectionRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }, [video.youtube_id, video.source_type]);
 
   // Auto-refresh while processing
   useEffect(() => {
@@ -255,7 +267,7 @@ export function VideoChannelClient({ video, transcript, clips, clipExports, pend
               className="relative w-full overflow-hidden"
               style={{ aspectRatio: "16/9", borderRadius: 14, background: "var(--yt-surface)" }}
             >
-              {video.youtube_id ? (
+              {video.youtube_id && (video.source_type === "youtube" || !video.source_type) ? (
                 <iframe
                   ref={iframeRef}
                   src={`https://www.youtube.com/embed/${video.youtube_id}?enablejsapi=1&playsinline=1`}
@@ -265,11 +277,29 @@ export function VideoChannelClient({ video, transcript, clips, clipExports, pend
                   className="absolute inset-0 w-full h-full border-0"
                   style={{ borderRadius: 14 }}
                 />
+              ) : video.source_playback_url ? (
+                <video
+                  ref={videoRef}
+                  src={video.source_playback_url}
+                  poster={video.thumbnail_url ?? undefined}
+                  controls
+                  playsInline
+                  preload="metadata"
+                  className="absolute inset-0 w-full h-full object-contain"
+                  style={{ borderRadius: 14, background: "#000" }}
+                />
               ) : video.thumbnail_url ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={video.thumbnail_url} alt="" className="absolute inset-0 w-full h-full object-cover" />
+                <img
+                  src={video.thumbnail_url}
+                  alt=""
+                  className="absolute inset-0 w-full h-full object-cover"
+                />
               ) : (
-                <div className="absolute inset-0 flex items-center justify-center" style={{ color: "var(--yt-text-2)" }}>
+                <div
+                  className="absolute inset-0 flex items-center justify-center"
+                  style={{ color: "var(--yt-text-2)" }}
+                >
                   <Film className="w-8 h-8 opacity-30" />
                 </div>
               )}

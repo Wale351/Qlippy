@@ -315,7 +315,11 @@ async def handle_edit_clip(job: dict) -> None:
 
         # Download only the clip time ranges and stitch into one landscape file.
         # InsightFace then scans this short clip instead of the full source video.
-        stitched_local = await download_and_stitch_cuts(video["youtube_url"], cuts)
+        stitched_local = await download_and_stitch_cuts(
+            video.get("source_url") or video.get("youtube_url"),
+            cuts,
+            source_r2_key=video.get("source_r2_key"),
+        )
 
         remapped_diar  = _remap_diar_timeline(diar_timeline, cuts)
         total_duration = sum(float(c["end"]) - float(c["start"]) for c in cuts)

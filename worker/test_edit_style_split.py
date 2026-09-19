@@ -23,7 +23,7 @@ import runner
 def test_edit_clip_caches_portrait_and_chains_style():
     calls: dict = {}
 
-    async def fake_download(url, cuts):
+    async def fake_download(url, cuts, source_r2_key=None):
         calls["stitched"] = True
         return str(Path(tempfile.gettempdir()) / "_split_stitched.mp4")
 

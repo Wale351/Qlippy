@@ -1,36 +1,55 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Plus, Loader2, X, AlertCircle, Clock } from "lucide-react";
+import { Plus, Loader2, X, AlertCircle, Clock, Upload } from "lucide-react";
 import { Collection } from "@/lib/types";
 import { formatDuration } from "@/lib/youtube";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 
-// ── YouTube URL validation ────────────────────────────────────────────────────
+// ── Video URL validation ──────────────────────────────────────────────────────
 
-const URL_MIN = 20;
-const URL_MAX = 200;
-
-const YT_PATTERNS = [
-  /^https?:\/\/(www\.|m\.)?youtube\.com\/watch\?.*v=[\w-]{11}/,
-  /^https?:\/\/youtu\.be\/[\w-]{11}/,
-  /^https?:\/\/(www\.)?youtube\.com\/shorts\/[\w-]{11}/,
-  /^https?:\/\/(www\.)?youtube\.com\/live\/[\w-]{11}/,
-  /^https?:\/\/(www\.)?youtube\.com\/embed\/[\w-]{11}/,
-];
+const URL_MIN = 8;
+const URL_MAX = 1000;
 
 function validateUrl(raw: string): string | null {
-  const url = raw.trim();
-  if (!url)                    return "URL is required";
-  if (url.includes(","))       return "Only one URL at a time — remove commas";
-  if (url.includes("\n"))      return "Only one URL at a time";
-  if (url.length < URL_MIN)    return `URL too short (min ${URL_MIN} characters)`;
-  if (url.length > URL_MAX)    return `URL too long (max ${URL_MAX} characters)`;
-  if (!YT_PATTERNS.some((p) => p.test(url)))
-    return "Not a valid YouTube video URL";
+  const value = raw.trim();
+
+  if (!value) return "URL is required";
+  if (value.includes(",")) return "Only one URL at a time — remove commas";
+  if (value.includes("\n")) return "Only one URL at a time";
+  if (value.length < URL_MIN) return "URL is too short";
+  if (value.length > URL_MAX) return `URL too long (max ${URL_MAX} characters)`;
+
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return "Enter a valid http or https video URL";
+    }
+  } catch {
+    return "Enter a valid video URL";
+  }
+
   return null;
 }
+
+function videoContentType(file: File): string | null {
+  if (file.type.startsWith("video/")) return file.type;
+
+  const ext = file.name.split(".").pop()?.toLowerCase();
+
+  const types: Record<string, string> = {
+    mp4: "video/mp4",
+    mov: "video/quicktime",
+    webm: "video/webm",
+    mkv: "video/x-matroska",
+    m4v: "video/x-m4v",
+    avi: "video/x-msvideo",
+  };
+
+  return ext ? types[ext] ?? null : null;
+}
+
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -38,6 +57,8 @@ interface Props { onAdded: () => void; }
 
 export function AddVideoDialog({ onAdded }: Props) {
   const [open, setOpen]         = useState(false);
+  const [mode, setMode]         = useState<"url" | "upload">("url");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [url, setUrl]           = useState("");
   const [urlTouched, setUrlTouched] = useState(false);
   const [loading, setLoading]   = useState(false);
@@ -53,6 +74,10 @@ export function AddVideoDialog({ onAdded }: Props) {
     title: string;
     duration: number | null;
     thumbnail: string | null;
+    channel_name: string;
+    source_type: string;
+    source_id: string | null;
+    source_url: string;
     resolutions: InspectResolution[];
   };
 
@@ -77,6 +102,8 @@ export function AddVideoDialog({ onAdded }: Props) {
 
   const resetAndClose = () => {
     setOpen(false);
+    setMode("url");
+    setSelectedFile(null);
     setUrl("");
     setUrlTouched(false);
     setError("");
@@ -130,6 +157,89 @@ export function AddVideoDialog({ onAdded }: Props) {
 
   const handleSubmit = async (e: { preventDefault(): void }) => {
     e.preventDefault();
+
+    if (mode === "upload") {
+      if (!selectedFile) {
+        setError("Choose a video file first");
+        return;
+      }
+
+      const contentType = videoContentType(selectedFile);
+
+      if (!contentType) {
+        setError("Please choose a supported video file");
+        return;
+      }
+
+      setError("");
+      setLoading(true);
+
+      try {
+        // 1. Ask Qlippy for a short-lived direct R2 upload URL.
+        const initRes = await fetch("/api/videos/upload-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: selectedFile.name,
+            content_type: contentType,
+            size: selectedFile.size,
+          }),
+        });
+
+        const initData = await initRes.json();
+
+        if (!initRes.ok) {
+          throw new Error(initData.error || "Failed to prepare upload");
+        }
+
+        // 2. Send the actual video directly from the browser to R2.
+        const uploadRes = await fetch(initData.upload_url, {
+          method: "PUT",
+          headers: {
+            "Content-Type": contentType,
+          },
+          body: selectedFile,
+        });
+
+        if (!uploadRes.ok) {
+          throw new Error(`Video upload failed (${uploadRes.status})`);
+        }
+
+        // 3. Create the Qlippy video record and start processing.
+        const title =
+          selectedFile.name.replace(/\.[^.]+$/, "").trim() ||
+          selectedFile.name;
+
+        const createRes = await fetch("/api/videos", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            source_r2_key: initData.r2_key,
+            source_type: "upload",
+            source_id: initData.r2_key,
+            title,
+            model_size: "large",
+            collection_id: collectionId || null,
+          }),
+        });
+
+        const createData = await createRes.json();
+
+        if (!createRes.ok) {
+          throw new Error(createData.error || "Failed to add uploaded video");
+        }
+
+        resetAndClose();
+        onAdded();
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : "Upload failed");
+      } finally {
+        setLoading(false);
+      }
+
+      return;
+    }
+
     setUrlTouched(true);
 
     const validationErr = validateUrl(url);
@@ -146,7 +256,7 @@ export function AddVideoDialog({ onAdded }: Props) {
         const res = await fetch("/api/videos/inspect", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ youtube_url: url.trim() }),
+          body: JSON.stringify({ video_url: url.trim() }),
         });
 
         const data = await res.json();
@@ -176,7 +286,14 @@ export function AddVideoDialog({ onAdded }: Props) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          youtube_url: url.trim(),
+          video_url: url.trim(),
+          source_url: inspectData.source_url,
+          source_type: inspectData.source_type,
+          source_id: inspectData.source_id,
+          title: inspectData.title,
+          thumbnail_url: inspectData.thumbnail,
+          channel_name: inspectData.channel_name,
+          duration: inspectData.duration,
           model_size: "large",
           collection_id: collectionId || null,
           resolution,
@@ -235,10 +352,50 @@ export function AddVideoDialog({ onAdded }: Props) {
 
         <form onSubmit={handleSubmit} className="space-y-4">
 
-          {/* YouTube URL */}
+          <div
+            className="grid grid-cols-2 gap-1 p-1 rounded-xl"
+            style={{ background: "var(--yt-surface-2)" }}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setMode("url");
+                setSelectedFile(null);
+                setError("");
+              }}
+              className="px-3 py-2 rounded-lg text-sm font-medium transition-colors"
+              style={{
+                background: mode === "url" ? "var(--yt-surface)" : "transparent",
+                color: mode === "url" ? "white" : "var(--yt-text-2)",
+              }}
+            >
+              Paste URL
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setMode("upload");
+                setInspectData(null);
+                setUrlTouched(false);
+                setError("");
+              }}
+              className="px-3 py-2 rounded-lg text-sm font-medium transition-colors"
+              style={{
+                background: mode === "upload" ? "var(--yt-surface)" : "transparent",
+                color: mode === "upload" ? "white" : "var(--yt-text-2)",
+              }}
+            >
+              Upload file
+            </button>
+          </div>
+
+          {mode === "url" ? (
+            <>
+          {/* Video URL */}
           <div>
             <label className="block text-sm mb-1.5" style={{ color: "var(--yt-text-2)" }}>
-              YouTube URL
+              Video URL
               <span className="ml-2 text-xs" style={{ color: "var(--yt-text-2)", opacity: 0.6 }}>
                 {url.length}/{URL_MAX}
               </span>
@@ -263,7 +420,7 @@ export function AddVideoDialog({ onAdded }: Props) {
                   setUrlTouched(true);
                 }
               }}
-              placeholder="https://www.youtube.com/watch?v=..."
+              placeholder="Paste a YouTube, TikTok, X, Instagram, Vimeo or video URL"
               maxLength={URL_MAX}
               className={`w-full px-3 py-2.5 rounded-lg text-sm text-white placeholder-[var(--yt-text-2)] focus:outline-none focus:ring-1 ${
                 urlError ? "ring-1 ring-red-500" : "focus:ring-[var(--yt-text-2)]"
@@ -277,7 +434,7 @@ export function AddVideoDialog({ onAdded }: Props) {
               </p>
             )}
             {!urlError && urlTouched && url.trim() && (
-              <p className="mt-1.5 text-xs text-green-500">Valid YouTube URL</p>
+              <p className="mt-1.5 text-xs text-green-500">Valid video URL</p>
             )}
           </div>
 
@@ -333,6 +490,56 @@ export function AddVideoDialog({ onAdded }: Props) {
                   );
                 })()}
               </div>
+            </div>
+          )}
+
+            </>
+          ) : (
+            <div>
+              <label className="block text-sm mb-1.5" style={{ color: "var(--yt-text-2)" }}>
+                Video file
+              </label>
+
+              <label
+                className="flex flex-col items-center justify-center gap-3 rounded-xl px-5 py-8 cursor-pointer transition-colors hover:bg-[var(--yt-surface-2)]"
+                style={{
+                  border: "1px dashed var(--yt-border)",
+                  background: "rgba(255,255,255,0.015)",
+                }}
+              >
+                <Upload className="w-7 h-7" style={{ color: "var(--yt-text-2)" }} />
+
+                {selectedFile ? (
+                  <div className="text-center min-w-0">
+                    <p className="text-sm font-medium text-white truncate max-w-[320px]">
+                      {selectedFile.name}
+                    </p>
+                    <p className="text-xs mt-1" style={{ color: "var(--yt-text-2)" }}>
+                      {formatBytes(selectedFile.size)}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="text-center">
+                    <p className="text-sm font-medium text-white">
+                      Choose a video
+                    </p>
+                    <p className="text-xs mt-1" style={{ color: "var(--yt-text-2)" }}>
+                      MP4, MOV, WebM, MKV and other video formats
+                    </p>
+                  </div>
+                )}
+
+                <input
+                  type="file"
+                  accept="video/*,.mkv,.m4v"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0] ?? null;
+                    setSelectedFile(file);
+                    setError("");
+                  }}
+                />
+              </label>
             </div>
           )}
 
@@ -419,15 +626,21 @@ export function AddVideoDialog({ onAdded }: Props) {
             </button>
             <button
               type="submit"
-              disabled={!!validateUrl(url) || inspecting}
+              disabled={
+                mode === "url"
+                  ? !!validateUrl(url) || inspecting
+                  : !selectedFile
+              }
               className="flex items-center gap-2 px-4 py-2 disabled:opacity-50 text-white text-sm font-medium rounded-full transition-colors"
               style={{ background: "var(--yt-red)" }}
             >
-              {inspecting
-                ? "Checking video…"
-                : inspectData
-                  ? "Start processing"
-                  : "Check video"}
+              {mode === "upload"
+                ? "Upload & process"
+                : inspecting
+                  ? "Checking video…"
+                  : inspectData
+                    ? "Start processing"
+                    : "Check video"}
             </button>
           </div>
         </form>

@@ -25,6 +25,9 @@ function runYtDlp(url: string): Promise<any> {
       "node",
       "--remote-components",
       "ejs:github",
+      ...(process.platform === "darwin"
+        ? ["--cookies-from-browser", process.env.YT_COOKIES_FROM_BROWSER || "safari"]
+        : []),
       url,
     ]);
 
@@ -56,14 +59,16 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const youtube_url = String(body.youtube_url || "").trim();
+  const video_url = String(
+    body.video_url || body.source_url || body.youtube_url || ""
+  ).trim();
 
-  if (!youtube_url) {
-    return NextResponse.json({ error: "youtube_url required" }, { status: 400 });
+  if (!video_url) {
+    return NextResponse.json({ error: "video_url required" }, { status: 400 });
   }
 
   try {
-    const info = await runYtDlp(youtube_url);
+    const info = await runYtDlp(video_url);
     const formats: FormatRow[] = Array.isArray(info.formats) ? info.formats : [];
 
     const heights = [360, 480, 720, 1080];
@@ -127,10 +132,26 @@ export async function POST(req: NextRequest) {
       })
       .filter(Boolean);
 
+    const extractor = String(
+      info.extractor_key || info.extractor || ""
+    ).toLowerCase();
+
+    let source_type = "other";
+    if (extractor.includes("youtube")) source_type = "youtube";
+    else if (extractor.includes("twitter") || extractor === "x") source_type = "twitter";
+    else if (extractor.includes("tiktok")) source_type = "tiktok";
+    else if (extractor.includes("instagram")) source_type = "instagram";
+    else if (extractor.includes("vimeo")) source_type = "vimeo";
+    else if (extractor.includes("generic")) source_type = "direct";
+
     return NextResponse.json({
       title: info.title ?? "",
       duration: info.duration ?? null,
       thumbnail: info.thumbnail ?? null,
+      channel_name: info.channel ?? info.uploader ?? info.creator ?? "",
+      source_type,
+      source_id: info.id ? String(info.id) : null,
+      source_url: info.webpage_url ?? video_url,
       resolutions,
     });
   } catch (err: unknown) {

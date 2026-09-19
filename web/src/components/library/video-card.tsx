@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import Image from "next/image";
 import { Video, VideoStatus } from "@/lib/types";
 import { formatDuration } from "@/lib/youtube";
 import { Trash2, Loader2, RefreshCw, MoreVertical, FolderInput, Check } from "lucide-react";
@@ -127,12 +126,13 @@ export function VideoCard({ video, collections, onDeleted, onMoved }: Props) {
       {/* Thumbnail */}
       <div className="relative aspect-video rounded-xl overflow-hidden bg-[var(--yt-surface)]">
         {video.thumbnail_url ? (
-          <Image
+          // External source thumbnails may come from Vimeo, TikTok, X,
+          // Instagram and other yt-dlp-supported CDNs.
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
             src={video.thumbnail_url}
             alt={video.title}
-            fill
-            className="object-cover group-hover:scale-105 transition-transform duration-200"
-            sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+            className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
           />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--yt-text-2)] text-xs">

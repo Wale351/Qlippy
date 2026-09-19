@@ -3,7 +3,7 @@ import { auth } from "@/lib/auth";
 import { notFound } from "next/navigation";
 import { Clip } from "@/lib/types";
 import { VideoChannelClient } from "@/components/video/video-channel-client";
-import { freshenExports, freshenClipThumbnails, freshenPortraitPreview } from "@/lib/r2";
+import { freshenExports, freshenClipThumbnails, freshenPortraitPreview, freshUrl } from "@/lib/r2";
 
 export default async function VideoPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -62,9 +62,21 @@ export default async function VideoPage({ params }: { params: Promise<{ id: stri
   const freshClips = await freshenClipThumbnails((clipsRes.data ?? []) as Clip[]);
   const freshVideo = await freshenPortraitPreview(video);
 
+  // YouTube keeps its native embed. Other supported sources play from the
+  // source copy Qlippy cached in R2 after import.
+  const sourcePlaybackUrl =
+    video.source_type !== "youtube" && video.source_r2_key
+      ? await freshUrl(video.source_r2_key)
+      : null;
+
+  const playableVideo = {
+    ...freshVideo,
+    source_playback_url: sourcePlaybackUrl,
+  };
+
   return (
     <VideoChannelClient
-      video={freshVideo}
+      video={playableVideo}
       transcript={transcriptRes.data}
       clips={freshClips}
       clipExports={clipExports}

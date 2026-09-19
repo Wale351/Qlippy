@@ -4,7 +4,7 @@ httpx>=0.26,<0.28
 boto3==1.35.76          # Cloudflare R2 (S3-compatible)
 supabase==2.10.0
 python-dotenv==1.0.1
-yt-dlp>=2026.8.19          # floor, not pin: YouTube breaks old versions within months
+yt-dlp[default,curl-cffi]>=2026.8.19  # floor, not pin: YouTube breaks old versions within months
 ffmpeg-python==0.2.0
 numpy==2.1.3
 opencv-python-headless==4.10.0.84

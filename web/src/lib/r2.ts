@@ -68,6 +68,25 @@ export async function putObject(r2Key: string, body: Uint8Array, contentType: st
 }
 
 /**
+ * Create a short-lived URL that lets the browser upload a file directly to R2.
+ * The video bytes never pass through the Next.js server.
+ */
+export async function presignedPutUrl(
+  r2Key: string,
+  contentType: string,
+): Promise<string> {
+  return getSignedUrl(
+    getClient(),
+    new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: r2Key,
+      ContentType: contentType,
+    }),
+    { expiresIn: 3600 },
+  );
+}
+
+/**
  * Apply freshUrl to every export row in a list.
  * Accepts rows that have r2_key (canonical) or fall back to stored r2_url.
  */

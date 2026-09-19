@@ -24,7 +24,7 @@ import runner
 def _run_two_concurrent_exports() -> dict:
     finished: dict[str, str] = {}
 
-    async def fake_download(url, cuts):
+    async def fake_download(url, cuts, source_r2_key=None):
         return str(Path(tempfile.gettempdir()) / "_nonexistent_stitched.mp4")
 
     def fake_cut_and_portrait(stitched, ranges, out_path, **kw):
