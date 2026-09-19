@@ -282,7 +282,14 @@ async def handle_edit_clip(job: dict) -> None:
             asyncio.to_thread(get_video, video_id),
             asyncio.to_thread(get_transcript, video_id),
         )
-        cuts = clip["cuts"]
+        # Give the outer speech boundaries a tiny safety cushion.
+        # Transcript timestamps can end a fraction early and clip the first/last
+        # spoken sound during the physical video cut. Internal cut points remain exact.
+        cuts = [dict(c) for c in clip["cuts"]]
+        if cuts:
+            cuts[0]["start"] = max(0.0, float(cuts[0]["start"]) - 0.15)
+            cuts[-1]["end"] = float(cuts[-1]["end"]) + 0.30
+
         diar_timeline = _build_diar_timeline(transcript)
 
         # Download only the clip time ranges and stitch into one landscape file.
@@ -299,7 +306,7 @@ async def handle_edit_clip(job: dict) -> None:
             await asyncio.to_thread(
                 cut_and_portrait,
                 stitched_local,
-                [{"start": 0, "end": total_duration + 5}],
+                [{"start": 0, "end": total_duration}],
                 cut_local,
                 diar_timeline=remapped_diar,
                 analysis_out_path=analysis_local,

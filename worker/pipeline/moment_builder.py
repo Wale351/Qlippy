@@ -211,12 +211,8 @@ def _expand_groups_to_min(
     if not groups:
         return groups
 
-    duration = _groups_duration(groups, sentences)
-
-    if duration >= TARGET_MIN_S:
-        return groups
-
-    # First bridge tiny conversational gaps between selected scenes.
+    # First bridge only tiny conversational gaps between selected scenes.
+    # Bridging means keeping the intervening conversation, not jump-cutting it.
     bridged: list[list[int]] = [groups[0][:]]
 
     for lo, hi in groups[1:]:
@@ -233,7 +229,34 @@ def _expand_groups_to_min(
             bridged.append([lo, hi])
 
     groups = bridged
+
+    # Prefer one continuous section over stitching distant parts of the video.
+    # Pick the section containing the most selected material, then expand
+    # naturally around it to reach the target duration.
+    if len(groups) > 1:
+        anchor_index = max(
+            range(len(groups)),
+            key=lambda i: (
+                _groups_duration([groups[i]], sentences),
+                -i,
+            ),
+        )
+
+        anchor = groups[anchor_index][:]
+        dropped = len(groups) - 1
+
+        log.info(
+            "Moment continuity: using anchor %s; ignoring %d distant group(s)",
+            anchor,
+            dropped,
+        )
+
+        groups = [anchor]
+
     duration = _groups_duration(groups, sentences)
+
+    if duration >= TARGET_MIN_S:
+        return groups
 
     # Prefer extending the ending. This preserves the existing hook.
     while duration < TARGET_MIN_S:

@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  allowedDevOrigins: ["192.168.0.102"],
   // Pin the workspace root to this app. Otherwise Next infers it from the nearest
   // lockfile and picked up a stray ~/package-lock.json, mis-resolving node_modules
   // (which left the native SWC binary unfound → slow WASM compile fallback).

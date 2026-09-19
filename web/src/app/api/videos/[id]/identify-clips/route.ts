@@ -68,6 +68,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .select()
     .single();
 
+  // Immediately expose re-analysis progress in the library UI.
+  await db
+    .from("videos")
+    .update({
+      status: "identifying",
+      processing_stage: "preparing_analysis",
+      error_msg: null,
+    })
+    .eq("id", id);
+
   triggerJob(job.id).catch(console.error);
 
   return NextResponse.json({ job_id: job.id });

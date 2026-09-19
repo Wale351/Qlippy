@@ -23,7 +23,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!video) return NextResponse.json({ error: "Video not found" }, { status: 404 });
 
   // Mark video as pending again
-  await db.from("videos").update({ status: "pending", error_msg: null }).eq("id", id);
+  await db
+    .from("videos")
+    .update({
+      status: "pending",
+      processing_stage: "preparing",
+      error_msg: null,
+    })
+    .eq("id", id);
 
   // Delete existing transcript
   await db.from("transcripts").delete().eq("video_id", id);
