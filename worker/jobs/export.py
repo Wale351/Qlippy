@@ -43,6 +43,25 @@ EXPORT_CONCURRENCY = max(1, int(os.getenv("EXPORT_CONCURRENCY", "2")))
 _export_semaphore = asyncio.Semaphore(EXPORT_CONCURRENCY)
 
 
+def _video_width(video_path: str, fallback: int = 1080) -> int:
+    """Read the actual rendered canvas width from the video."""
+    probe = subprocess.run(
+        [
+            "ffprobe", "-v", "quiet",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width",
+            "-of", "csv=p=0",
+            video_path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        return int(probe.stdout.strip().split(",")[0])
+    except (ValueError, IndexError):
+        return fallback
+
+
 async def _apply_text_sticker(video_path: str, cfg: dict) -> str | None:
     """Burn an Instagram-style text sticker onto the video. Returns new path or None."""
     from pipeline.text_sticker import render_sticker_png
@@ -67,9 +86,10 @@ async def _apply_text_sticker(video_path: str, cfg: dict) -> str | None:
         else None
     )
 
-    # Portrait export is always 1080px wide; match the frontend preview baseline.
-    font_px      = max(int(1080 * size_pct / 100), 8)
-    max_width_px = int(1080 * 0.85)
+    # Scale against the actual output canvas so sticker sizing matches every ratio.
+    video_w = _video_width(video_path)
+    font_px      = max(int(video_w * size_pct / 100), 8)
+    max_width_px = int(video_w * 0.85)
 
     try:
         png_bytes = await asyncio.to_thread(
@@ -167,12 +187,13 @@ async def _apply_image_sticker(video_path: str, cfg: dict) -> str | None:
         log.warning("Image sticker download failed (%s): %s", r2_key, e)
         return None
 
-    # Portrait export is always 1080px wide; match the frontend preview baseline.
+    # Scale uploaded stickers against the actual output canvas width.
+    video_w = _video_width(video_path)
     out_path = tempfile.mktemp(suffix=".mp4")
     result = await asyncio.to_thread(
         subprocess.run,
         ["ffmpeg", "-y", "-i", video_path, "-i", png_local,
-         "-filter_complex", build_overlay_filter(cfg, canvas_w=1080),
+         "-filter_complex", build_overlay_filter(cfg, canvas_w=video_w),
          "-codec:a", "copy", out_path],
         capture_output=True,
     )
@@ -311,6 +332,7 @@ async def handle_edit_clip(job: dict) -> None:
                 diar_timeline=remapped_diar,
                 analysis_out_path=analysis_local,
                 speaker_faces=speaker_faces,
+                aspect_ratio=payload.get("aspect_ratio") or "9:16",
             )
 
         portrait_key = f"clip_edits/{edit_id}/portrait.mp4"

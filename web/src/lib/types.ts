@@ -5,7 +5,7 @@
 export type VideoStatus = "pending" | "transcribing" | "identifying" | "ready" | "error";
 export type JobStatus   = "queued" | "processing" | "done" | "error" | "cancelled";
 export type JobType     = "transcribe" | "identify_clips" | "cut_clip" | "export_clip" | "edit_clip" | "style_clip";
-export type AspectRatio = "9:16" | "16:9";
+export type AspectRatio = "9:16" | "16:9" | "1:1" | "4:5" | "3:4" | "4:3";
 export type Resolution  = "1080p";
 export type Tone        = "hook" | "educational" | "entertaining" | "emotional" | "cta" | "story" | "controversy";
 export type ModelSize   = "base" | "medium" | "large";

@@ -46,7 +46,24 @@ const withSolidPill = (c: PresetConfig): PresetConfig => {
 // identity + the solid-pill coercion before it drives the dialog.
 const normalize = (c: PresetConfig): PresetConfig => withSolidPill(normalizeCaptionConfig(c));
 
-type LastExport = { config?: PresetConfig; captionsOn?: boolean; sticker?: Partial<TextStickerConfig>; imageSticker?: ImageStickerConfig | null };
+type AspectRatio = "9:16" | "1:1" | "3:4" | "4:3";
+
+const ASPECT_RATIO_OPTIONS: AspectRatio[] = ["9:16", "1:1", "3:4", "4:3"];
+
+const ASPECT_RATIO_CSS: Record<AspectRatio, string> = {
+  "9:16": "9 / 16",
+  "1:1": "1 / 1",
+  "3:4": "3 / 4",
+  "4:3": "4 / 3",
+};
+
+type LastExport = {
+  config?: PresetConfig;
+  captionsOn?: boolean;
+  aspectRatio?: AspectRatio;
+  sticker?: Partial<TextStickerConfig>;
+  imageSticker?: ImageStickerConfig | null;
+};
 function readLastExport(): LastExport | null {
   if (typeof window === "undefined") return null;
   try { return JSON.parse(localStorage.getItem(LAST_KEY) ?? "null"); } catch { return null; }
@@ -116,6 +133,7 @@ export function ExportDialog({ clip, posterUrl, initialConfig, initialSubtitlePr
   // last export so the dialog opens on the user's previous choices.
   const [captionsOn, setCaptionsOn] = useState<boolean>(() => readLastExport()?.captionsOn ?? true);
   const [config,     setConfig]     = useState<PresetConfig>(() => normalize(initialConfig ?? readLastExport()?.config ?? DEFAULT_PRESET_CONFIG));
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>(() => readLastExport()?.aspectRatio ?? "9:16");
 
   // Saved caption styles now live behind the ⋯ menu.
   const [presets,   setPresets]   = useState<SavedPreset[]>([]);
@@ -362,8 +380,9 @@ export function ExportDialog({ clip, posterUrl, initialConfig, initialSubtitlePr
   };
 
   const handleClip = async () => {
-    setSubmitting(true);
     setErrorMsg("");
+
+    setSubmitting(true);
     // Capture the sticker's actual line breaks from the live preview so the worker
     // reproduces them verbatim — the browser's layout is the source of truth.
     let stickerPayload: TextStickerConfig | null = null;
@@ -377,7 +396,7 @@ export function ExportDialog({ clip, posterUrl, initialConfig, initialSubtitlePr
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({
-          aspect_ratio:        "9:16",
+          aspect_ratio:        aspectRatio,
           preset_config:       captionsOn ? config : null,
           text_sticker_config: stickerPayload,
           image_sticker_config: imgSticker
@@ -390,12 +409,12 @@ export function ExportDialog({ clip, posterUrl, initialConfig, initialSubtitlePr
       // Remember these settings as the defaults for the next clip.
       try {
         localStorage.setItem(LAST_KEY, JSON.stringify({
-          config, captionsOn,
+          config, captionsOn, aspectRatio,
           sticker: { bg: sticker.bg, fg: sticker.fg, size_pct: sticker.size_pct, scale: sticker.scale },
           imageSticker: imgSticker,
         }));
       } catch {}
-      onQueued(data.export_id, `${clip.hook?.slice(0, 40) ?? "Clip"} · 9:16`);
+      onQueued(data.export_id, `${clip.hook?.slice(0, 40) ?? "Clip"} · ${aspectRatio}`);
       onClose();
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : "Something went wrong");
@@ -415,7 +434,7 @@ export function ExportDialog({ clip, posterUrl, initialConfig, initialSubtitlePr
         <div className="flex items-center justify-between pl-5 pr-3 py-2.5 flex-shrink-0" style={{ borderBottom: "1px solid var(--yt-border)" }}>
           <div className="flex items-baseline gap-2">
             <p className="text-sm font-semibold" style={{ color: "var(--yt-text)" }}>{restyle ? "Restyle clip" : "Export clip"}</p>
-            <span className="text-[11px]" style={{ color: "var(--yt-text-2)" }}>9:16 vertical</span>
+            <span className="text-[11px]" style={{ color: "var(--yt-text-2)" }}>{aspectRatio} frame</span>
           </div>
           <button aria-label="Close" onClick={onClose} disabled={submitting}
             className="p-1.5 rounded-md transition-colors hover:bg-white/5 disabled:opacity-40">
@@ -427,9 +446,32 @@ export function ExportDialog({ clip, posterUrl, initialConfig, initialSubtitlePr
         <div className="flex flex-col sm:flex-row flex-1 min-h-0 overflow-y-auto sm:overflow-hidden">
 
           {/* Video column — the hero preview owns the left side */}
-          <div className="flex-none flex items-center justify-center p-5 sm:min-h-0" style={{ background: "#0f0f0f" }}>
-              <div ref={previewRef} className="relative bg-black rounded-lg overflow-hidden flex-shrink-0 shadow-2xl"
-                style={{ width: heroW, aspectRatio: "9/16" }}>
+          <div className="flex-none flex flex-col items-center justify-center gap-4 p-5 sm:min-h-0" style={{ background: "#0f0f0f" }}>
+              <div className="flex items-center gap-1.5 rounded-lg p-1" style={{ background: "rgba(255,255,255,0.06)" }}>
+                {ASPECT_RATIO_OPTIONS.map((ratio) => {
+                  const active = aspectRatio === ratio;
+                  return (
+                    <button
+                      key={ratio}
+                      type="button"
+                      onClick={() => {
+                        setAspectRatio(ratio);
+                        setErrorMsg("");
+                      }}
+                      className="px-3 py-1.5 rounded-md text-[11px] font-medium transition-colors"
+                      style={{
+                        background: active ? "#fff" : "transparent",
+                        color: active ? "#0a0a0a" : "var(--yt-text-2)",
+                      }}
+                    >
+                      {ratio}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div ref={previewRef} className="relative bg-black rounded-lg overflow-hidden flex-shrink-0 shadow-2xl transition-all duration-200"
+                style={{ width: heroW, aspectRatio: ASPECT_RATIO_CSS[aspectRatio] }}>
                 {thumbSrc ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={thumbSrc} alt="" onError={() => setThumbFailed(true)} className="absolute inset-0 w-full h-full object-cover" />

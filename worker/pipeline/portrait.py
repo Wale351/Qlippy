@@ -25,7 +25,17 @@ from pipeline.memlog import log_rss
 
 log = logging.getLogger(__name__)
 
-OUT_W, OUT_H     = 1080, 1920
+DEFAULT_OUT_W, DEFAULT_OUT_H = 1080, 1920
+
+OUTPUT_SIZES = {
+    "9:16": (1080, 1920),
+    "1:1":  (1080, 1080),
+    "3:4":  (1080, 1440),
+    "4:3":  (1440, 1080),
+}
+
+def _output_size(aspect_ratio: str | None) -> tuple[int, int]:
+    return OUTPUT_SIZES.get(aspect_ratio or "9:16", OUTPUT_SIZES["9:16"])
 SCAN_FPS         = 4       # full/fallback analysis
 FAST_SCAN_FPS    = 3       # stored speaker bindings available
 SCAN_W           = 320     # resize width for detection
@@ -52,14 +62,17 @@ CAST_MIN_PRESENCE = 0.5   # identity must appear in ≥50% of frames to count as
 # Full-frame mode: instead of black bars, fill the canvas with a blurred,
 # zoomed copy of the clip and overlay the sharp full frame centered on top.
 # Background is blurred at 1/4 resolution then upscaled — same look, ~16x cheaper.
-_BLUR_FILL = (
-    "[0:v]split=2[bg][fg];"
-    f"[bg]scale={OUT_W // 4}:{OUT_H // 4}:force_original_aspect_ratio=increase,"
-    f"crop={OUT_W // 4}:{OUT_H // 4},gblur=sigma=12,eq=brightness=-0.06,"
-    f"scale={OUT_W}:{OUT_H}[bgf];"
-    f"[fg]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=decrease:flags=lanczos[fgf];"
-    "[bgf][fgf]overlay=(W-w)/2:(H-h)/2,setsar=1:1,format=yuv420p[out]"
-)
+def _blur_fill(out_w: int, out_h: int) -> str:
+    small_w = max(2, out_w // 4)
+    small_h = max(2, out_h // 4)
+    return (
+        "[0:v]split=2[bg][fg];"
+        f"[bg]scale={small_w}:{small_h}:force_original_aspect_ratio=increase,"
+        f"crop={small_w}:{small_h},gblur=sigma=12,eq=brightness=-0.06,"
+        f"scale={out_w}:{out_h}[bgf];"
+        f"[fg]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:flags=lanczos[fgf];"
+        "[bgf][fgf]overlay=(W-w)/2:(H-h)/2,setsar=1:1,format=yuv420p[out]"
+    )
 
 
 # ── Encoder ───────────────────────────────────────────────────────────────────
@@ -745,9 +758,10 @@ def _build_timeline(
 
     cast = _main_cast(records)
 
-    # Panel dimensions for split mode: each face gets a 9:8 crop → scales to 1080×960
+    # Two stacked panels. Each panel uses twice the full-frame aspect ratio.
     panel_crop_h = (int(src_h * 0.6) // 2) * 2
-    panel_crop_w = (int(panel_crop_h * 9 / 8) // 2) * 2
+    panel_aspect = 2 * (crop_w / crop_h)
+    panel_crop_w = (int(panel_crop_h * panel_aspect) // 2) * 2
 
     current_speaker: str | None = None
     pending_speaker: str | None = None
@@ -1222,6 +1236,7 @@ def _pan_expr(keyframes: list[dict], axis: str, render_start: float, render_end:
 
 def _render_face_crop(
     source: str, start: float, dur: float, seg: dict, output: str,
+    out_w: int = DEFAULT_OUT_W, out_h: int = DEFAULT_OUT_H,
 ) -> None:
     crop = seg["crop"]
     kfs  = seg.get("keyframes") or []
@@ -1232,7 +1247,7 @@ def _render_face_crop(
         x_expr, y_expr = str(crop["x"]), str(crop["y"])
     vf = (
         f"crop=w={crop['w']}:h={crop['h']}:x={x_expr}:y={y_expr},"
-        f"scale={OUT_W}:{OUT_H}:flags=lanczos,setsar=1:1,format=yuv420p"
+        f"scale={out_w}:{out_h}:flags=lanczos,setsar=1:1,format=yuv420p"
     )
     _run([
         "ffmpeg", "-y",
@@ -1244,8 +1259,9 @@ def _render_face_crop(
 
 def _render_split(
     source: str, start: float, dur: float, seg: dict, output: str,
+    out_w: int = DEFAULT_OUT_W, out_h: int = DEFAULT_OUT_H,
 ) -> None:
-    half_h = OUT_H // 2   # 960 — each panel is 1080×960, vstack → 1080×1920
+    half_h = out_h // 2
     pkfs   = seg.get("panel_keyframes") or [None, None]
 
     def _panel_exprs(crop: dict, kfs: list | None) -> tuple[str, str]:
@@ -1258,8 +1274,8 @@ def _render_split(
     x0, y0 = _panel_exprs(c0, pkfs[0])
     x1, y1 = _panel_exprs(c1, pkfs[1])
     vf = (
-        f"[0:v]crop=w={c0['w']}:h={c0['h']}:x={x0}:y={y0},scale={OUT_W}:{half_h}:flags=lanczos[top];"
-        f"[0:v]crop=w={c1['w']}:h={c1['h']}:x={x1}:y={y1},scale={OUT_W}:{half_h}:flags=lanczos[bottom];"
+        f"[0:v]crop=w={c0['w']}:h={c0['h']}:x={x0}:y={y0},scale={out_w}:{half_h}:flags=lanczos[top];"
+        f"[0:v]crop=w={c1['w']}:h={c1['h']}:x={x1}:y={y1},scale={out_w}:{half_h}:flags=lanczos[bottom];"
         "[top][bottom]vstack=inputs=2[out]"
     )
     _run([
@@ -1271,23 +1287,29 @@ def _render_split(
     ])
 
 
-def _render_letterbox(source: str, start: float, dur: float, output: str) -> None:
+def _render_letterbox(
+    source: str, start: float, dur: float, output: str,
+    out_w: int = DEFAULT_OUT_W, out_h: int = DEFAULT_OUT_H,
+) -> None:
     _run([
         "ffmpeg", "-y",
         "-ss", str(start), "-i", source, "-t", str(dur),
-        "-filter_complex", _BLUR_FILL, "-map", "[out]", "-map", "0:a?",
+        "-filter_complex", _blur_fill(out_w, out_h), "-map", "[out]", "-map", "0:a?",
         *_venc(), "-c:a", "aac", "-movflags", "+faststart",
         output,
     ])
 
 
-def _dispatch_render(source: str, start: float, dur: float, seg: dict, output: str) -> None:
+def _dispatch_render(
+    source: str, start: float, dur: float, seg: dict, output: str,
+    out_w: int = DEFAULT_OUT_W, out_h: int = DEFAULT_OUT_H,
+) -> None:
     if seg["mode"] == "single" and seg.get("crop"):
-        _render_face_crop(source, start, dur, seg, output)
+        _render_face_crop(source, start, dur, seg, output, out_w, out_h)
     elif seg["mode"] == "split" and seg.get("crops"):
-        _render_split(source, start, dur, seg, output)
+        _render_split(source, start, dur, seg, output, out_w, out_h)
     else:
-        _render_letterbox(source, start, dur, output)
+        _render_letterbox(source, start, dur, output, out_w, out_h)
 
 
 def _render_cut(
@@ -1295,17 +1317,19 @@ def _render_cut(
     cut: dict,
     timeline: list[dict],
     output: str,
+    out_w: int = DEFAULT_OUT_W,
+    out_h: int = DEFAULT_OUT_H,
 ) -> None:
     cut_start = float(cut["start"])
     cut_end   = float(cut["end"])
 
     relevant = [s for s in timeline if s["end"] > cut_start and s["start"] < cut_end]
     if not relevant:
-        _render_letterbox(source, cut_start, cut_end - cut_start, output)
+        _render_letterbox(source, cut_start, cut_end - cut_start, output, out_w, out_h)
         return
 
     if len(relevant) == 1:
-        _dispatch_render(source, cut_start, cut_end - cut_start, relevant[0], output)
+        _dispatch_render(source, cut_start, cut_end - cut_start, relevant[0], output, out_w, out_h)
         return
 
     tasks: list[tuple] = []
@@ -1322,15 +1346,15 @@ def _render_cut(
             tasks.append((seg_start, dur, seg, tmp))
 
         if not tasks:
-            _render_letterbox(source, cut_start, cut_end - cut_start, output)
+            _render_letterbox(source, cut_start, cut_end - cut_start, output, out_w, out_h)
         elif len(tasks) == 1:
             s, d, seg, tmp = tasks[0]
-            _dispatch_render(source, s, d, seg, tmp)
+            _dispatch_render(source, s, d, seg, tmp, out_w, out_h)
             shutil.move(tmp_files.pop(), output)
             tmp_files.clear()
         else:
             with ThreadPoolExecutor() as pool:
-                futs = [pool.submit(_dispatch_render, source, s, d, seg, tmp) for s, d, seg, tmp in tasks]
+                futs = [pool.submit(_dispatch_render, source, s, d, seg, tmp, out_w, out_h) for s, d, seg, tmp in tasks]
                 for f in futs:
                     f.result()
             _concat(tmp_files, output)
@@ -1348,10 +1372,13 @@ def cut_and_portrait(
     diar_timeline: list | None = None,
     analysis_out_path: str | None = None,
     speaker_faces: dict[str, list[float]] | None = None,
+    aspect_ratio: str = "9:16",
 ) -> None:
     fps, src_w, src_h = _video_meta(source_path)
+    out_w, out_h = _output_size(aspect_ratio)
+
     crop_h = (int(src_h * PORTRAIT_FILL) // 2) * 2
-    crop_w = (int(crop_h * 9 / 16) // 2) * 2
+    crop_w = (int(crop_h * out_w / out_h) // 2) * 2
 
     # Face-tracked crops assume a landscape source; square/portrait sources
     # would need a crop wider than the frame — letterbox instead.
@@ -1361,12 +1388,12 @@ def cut_and_portrait(
 
     if not face_track:
         if len(cuts) == 1:
-            _render_letterbox(source_path, float(cuts[0]["start"]), float(cuts[0]["end"]) - float(cuts[0]["start"]), output_path)
+            _render_letterbox(source_path, float(cuts[0]["start"]), float(cuts[0]["end"]) - float(cuts[0]["start"]), output_path, out_w, out_h)
         else:
             tmp_files = [_mktemp(suffix=".mp4") for _ in cuts]
             try:
                 with ThreadPoolExecutor() as pool:
-                    futs = [pool.submit(_render_letterbox, source_path, float(c["start"]), float(c["end"]) - float(c["start"]), tmp)
+                    futs = [pool.submit(_render_letterbox, source_path, float(c["start"]), float(c["end"]) - float(c["start"]), tmp, out_w, out_h)
                             for c, tmp in zip(cuts, tmp_files)]
                     for f in futs:
                         f.result()
@@ -1380,12 +1407,12 @@ def cut_and_portrait(
                                speaker_faces=speaker_faces)
 
     if len(cuts) == 1:
-        _render_cut(source_path, cuts[0], timeline, output_path)
+        _render_cut(source_path, cuts[0], timeline, output_path, out_w, out_h)
     else:
         tmp_files = [_mktemp(suffix=".mp4") for _ in cuts]
         try:
             with ThreadPoolExecutor() as pool:
-                futs = [pool.submit(_render_cut, source_path, cut, timeline, tmp)
+                futs = [pool.submit(_render_cut, source_path, cut, timeline, tmp, out_w, out_h)
                         for cut, tmp in zip(cuts, tmp_files)]
                 for f in futs:
                     f.result()

@@ -279,7 +279,13 @@ def burn_subtitles_hf(
                 "-i", input_path,
                 "-framerate", str(round(fps)), "-start_number", num_part,
                 "-i", frame_pattern,
-                "-filter_complex", "[0:v][1:v]overlay=0:0:shortest=1",
+                "-filter_complex",
+                (
+                    f"[0:v]scale={canvas_w}:{canvas_h}:flags=lanczos[base];"
+                    f"[1:v]scale={canvas_w}:{canvas_h}:flags=lanczos,format=rgba[cap];"
+                    "[base][cap]overlay=0:0:shortest=1,setsar=1[out]"
+                ),
+                "-map", "[out]", "-map", "0:a?",
                 "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
                 "-c:a", "copy",
                 output_path,
