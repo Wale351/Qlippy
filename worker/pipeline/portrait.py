@@ -1373,9 +1373,15 @@ def cut_and_portrait(
     analysis_out_path: str | None = None,
     speaker_faces: dict[str, list[float]] | None = None,
     aspect_ratio: str = "9:16",
+    fit_mode: str = "fill",
 ) -> None:
     fps, src_w, src_h = _video_meta(source_path)
     out_w, out_h = _output_size(aspect_ratio)
+
+    # Fit keeps the complete source frame visible inside the selected canvas.
+    # Fill keeps the existing face-tracked crop behaviour.
+    if fit_mode == "fit":
+        face_track = False
 
     crop_h = (int(src_h * PORTRAIT_FILL) // 2) * 2
     crop_w = (int(crop_h * out_w / out_h) // 2) * 2

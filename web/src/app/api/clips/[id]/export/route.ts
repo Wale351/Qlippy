@@ -13,6 +13,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const {
     aspect_ratio       = "9:16",
+    fit_mode           = "fill",
     preset_id          = null,
     preset_config      = null,
     text_sticker_config = null,
@@ -59,6 +60,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .select("id, status, r2_key")
     .eq("clip_id", clip.id)
     .eq("aspect_ratio", aspect_ratio)
+    .eq("fit_mode", fit_mode)
     .eq("cuts_hash", cuts_hash)
     .maybeSingle();
 
@@ -80,8 +82,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const { data: claimed } = await db
       .from("clip_edits")
       .upsert(
-        { clip_id: clip.id, user_id: userId, aspect_ratio, cuts_hash, status: "queued" },
-        { onConflict: "clip_id,aspect_ratio,cuts_hash", ignoreDuplicates: true },
+        { clip_id: clip.id, user_id: userId, aspect_ratio, fit_mode, cuts_hash, status: "queued" },
+        { onConflict: "clip_id,aspect_ratio,fit_mode,cuts_hash", ignoreDuplicates: true },
       )
       .select("id")
       .maybeSingle();
@@ -118,6 +120,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       clip_id:      clip.id,
       user_id:      userId,
       aspect_ratio,
+      fit_mode,
       preset_id:    preset_id || null,
       edit_id:      editId,
       status:       "queued",
@@ -141,6 +144,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         clip_id:       clip.id,
         video_id:      clip.video_id,
         aspect_ratio,
+        fit_mode,
         preset_id:     preset_id     || null,
         preset_config:    preset_config    || null,
         text_sticker_config: sticker,

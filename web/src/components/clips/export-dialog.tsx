@@ -47,6 +47,7 @@ const withSolidPill = (c: PresetConfig): PresetConfig => {
 const normalize = (c: PresetConfig): PresetConfig => withSolidPill(normalizeCaptionConfig(c));
 
 type AspectRatio = "9:16" | "1:1" | "3:4" | "4:3";
+type FitMode = "fill" | "fit";
 
 const ASPECT_RATIO_OPTIONS: AspectRatio[] = ["9:16", "1:1", "3:4", "4:3"];
 
@@ -61,6 +62,7 @@ type LastExport = {
   config?: PresetConfig;
   captionsOn?: boolean;
   aspectRatio?: AspectRatio;
+  fitMode?: FitMode;
   sticker?: Partial<TextStickerConfig>;
   imageSticker?: ImageStickerConfig | null;
 };
@@ -134,6 +136,7 @@ export function ExportDialog({ clip, posterUrl, initialConfig, initialSubtitlePr
   const [captionsOn, setCaptionsOn] = useState<boolean>(() => readLastExport()?.captionsOn ?? true);
   const [config,     setConfig]     = useState<PresetConfig>(() => normalize(initialConfig ?? readLastExport()?.config ?? DEFAULT_PRESET_CONFIG));
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(() => readLastExport()?.aspectRatio ?? "9:16");
+  const [fitMode, setFitMode] = useState<FitMode>(() => readLastExport()?.fitMode ?? "fill");
 
   // Saved caption styles now live behind the ⋯ menu.
   const [presets,   setPresets]   = useState<SavedPreset[]>([]);
@@ -397,6 +400,7 @@ export function ExportDialog({ clip, posterUrl, initialConfig, initialSubtitlePr
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({
           aspect_ratio:        aspectRatio,
+          fit_mode:            fitMode,
           preset_config:       captionsOn ? config : null,
           text_sticker_config: stickerPayload,
           image_sticker_config: imgSticker
@@ -409,7 +413,7 @@ export function ExportDialog({ clip, posterUrl, initialConfig, initialSubtitlePr
       // Remember these settings as the defaults for the next clip.
       try {
         localStorage.setItem(LAST_KEY, JSON.stringify({
-          config, captionsOn, aspectRatio,
+          config, captionsOn, aspectRatio, fitMode,
           sticker: { bg: sticker.bg, fg: sticker.fg, size_pct: sticker.size_pct, scale: sticker.scale },
           imageSticker: imgSticker,
         }));
@@ -442,39 +446,93 @@ export function ExportDialog({ clip, posterUrl, initialConfig, initialSubtitlePr
           </button>
         </div>
 
+        <div
+          className="flex flex-wrap items-center justify-center gap-3 px-4 py-2.5 flex-shrink-0"
+          style={{ borderBottom: "1px solid var(--yt-border)", background: "var(--yt-bg)" }}
+        >
+          <div className="flex items-center gap-1.5 rounded-lg p-1" style={{ background: "rgba(255,255,255,0.06)" }}>
+            {ASPECT_RATIO_OPTIONS.map((ratio) => {
+              const active = aspectRatio === ratio;
+              return (
+                <button
+                  key={ratio}
+                  type="button"
+                  onClick={() => {
+                    setAspectRatio(ratio);
+                    setErrorMsg("");
+                  }}
+                  className="px-3 py-1.5 rounded-md text-[11px] font-medium transition-colors"
+                  style={{
+                    background: active ? "#fff" : "transparent",
+                    color: active ? "#0a0a0a" : "var(--yt-text-2)",
+                  }}
+                >
+                  {ratio}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center gap-1.5 rounded-lg p-1" style={{ background: "rgba(255,255,255,0.06)" }}>
+            {(["fill", "fit"] as FitMode[]).map((mode) => {
+              const active = fitMode === mode;
+              return (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => {
+                    setFitMode(mode);
+                    setErrorMsg("");
+                  }}
+                  className="px-4 py-1.5 rounded-md text-[11px] font-medium transition-colors"
+                  style={{
+                    background: active ? "#fff" : "transparent",
+                    color: active ? "#0a0a0a" : "var(--yt-text-2)",
+                  }}
+                >
+                  {mode === "fill" ? "Fill" : "Fit"}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {/* ── Main: video | properties panel ── */}
         <div className="flex flex-col sm:flex-row flex-1 min-h-0 overflow-y-auto sm:overflow-hidden">
 
           {/* Video column — the hero preview owns the left side */}
-          <div className="flex-none flex flex-col items-center justify-center gap-4 p-5 sm:min-h-0" style={{ background: "#0f0f0f" }}>
-              <div className="flex items-center gap-1.5 rounded-lg p-1" style={{ background: "rgba(255,255,255,0.06)" }}>
-                {ASPECT_RATIO_OPTIONS.map((ratio) => {
-                  const active = aspectRatio === ratio;
-                  return (
-                    <button
-                      key={ratio}
-                      type="button"
-                      onClick={() => {
-                        setAspectRatio(ratio);
-                        setErrorMsg("");
-                      }}
-                      className="px-3 py-1.5 rounded-md text-[11px] font-medium transition-colors"
-                      style={{
-                        background: active ? "#fff" : "transparent",
-                        color: active ? "#0a0a0a" : "var(--yt-text-2)",
-                      }}
-                    >
-                      {ratio}
-                    </button>
-                  );
-                })}
-              </div>
-
+          <div className="flex-none flex flex-col items-center justify-start sm:justify-center gap-4 p-5 sm:min-h-0" style={{ background: "#0f0f0f" }}>
               <div ref={previewRef} className="relative bg-black rounded-lg overflow-hidden flex-shrink-0 shadow-2xl transition-all duration-200"
                 style={{ width: heroW, aspectRatio: ASPECT_RATIO_CSS[aspectRatio] }}>
                 {thumbSrc ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={thumbSrc} alt="" onError={() => setThumbFailed(true)} className="absolute inset-0 w-full h-full object-cover" />
+                  fitMode === "fill" ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={thumbSrc}
+                      alt=""
+                      onError={() => setThumbFailed(true)}
+                      className="absolute inset-0 w-full h-full object-cover"
+                    />
+                  ) : (
+                    <>
+                      {/* Blurred background preview */}
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={thumbSrc}
+                        alt=""
+                        className="absolute inset-0 w-full h-full object-cover scale-110 blur-xl opacity-70"
+                      />
+
+                      {/* Full source frame */}
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={thumbSrc}
+                        alt=""
+                        onError={() => setThumbFailed(true)}
+                        className="absolute inset-0 w-full h-full object-contain"
+                      />
+                    </>
+                  )
                 ) : (
                   <div className="absolute inset-0" style={{ background: "#ffffff" }} />
                 )}

@@ -333,6 +333,7 @@ async def handle_edit_clip(job: dict) -> None:
                 analysis_out_path=analysis_local,
                 speaker_faces=speaker_faces,
                 aspect_ratio=payload.get("aspect_ratio") or "9:16",
+                fit_mode=payload.get("fit_mode") or "fill",
             )
 
         portrait_key = f"clip_edits/{edit_id}/portrait.mp4"
