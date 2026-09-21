@@ -13,6 +13,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const body = await req.json().catch(() => ({}));
   const keepExisting = body?.keep_existing === true;
 
+  const rawClipDuration = body?.clip_duration_seconds;
+  const clipDurationSeconds =
+    rawClipDuration === null ||
+    rawClipDuration === undefined ||
+    rawClipDuration === ""
+      ? null
+      : Number(rawClipDuration);
+
+  if (
+    clipDurationSeconds !== null &&
+    ![15, 30, 60, 90].includes(clipDurationSeconds)
+  ) {
+    return NextResponse.json(
+      { error: "Invalid clip duration" },
+      { status: 400 }
+    );
+  }
+
   const db = createAdminClient();
 
   // Verify video ownership + transcript exists
@@ -43,7 +61,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       : ["educational", "entertaining", "hook", "emotional", "cta"],
   };
 
-  const jobPayload: Record<string, unknown> = { video_id: id, preferences, keep_existing: keepExisting };
+  const jobPayload: Record<string, unknown> = {
+    video_id: id,
+    preferences,
+    keep_existing: keepExisting,
+    clip_duration_seconds: clipDurationSeconds,
+  };
 
   // Pass niche profile to worker if configured
   if (userProfile?.niche || userProfile?.audience) {

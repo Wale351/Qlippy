@@ -23,7 +23,7 @@ ARCHETYPES = {
 }
 
 MAX_PARALLEL_CHUNKS = 4
-TOP_K               = 10   # candidates passed on to the crafter
+TOP_K               = 24   # coverage-aware candidate budget passed downstream
 MAX_SPAN_SENTENCES  = 80   # over-long spans are trimmed around the payoff
 
 SYSTEM_PROMPT = """\
@@ -55,6 +55,7 @@ THIS TRANSCRIPT. Use the full range and be honest — most content is filler.
 
 Bias toward recall: include borderline moments — downstream stages cut hard. \
 Moments may overlap when a span genuinely contains two different moments.
+Return at most 8 of the strongest distinct moments from this transcript chunk.
 {tone_hint}
 Output strict JSON only:
 {{"moments": [{{"archetype": "...", "score": 0, "payoff": 0, "lo": 0, "hi": 0, "why": "..."}}]}}\
@@ -148,7 +149,7 @@ async def scout_moments(
             try:
                 data = await call_agent(
                     "scout", system, user,
-                    temperature=0.3, max_tokens=2048,
+                    temperature=0.3, max_tokens=4096,
                 )
             except Exception as e:
                 # One bad chunk must not sink a long job — skip it and keep going
@@ -214,8 +215,42 @@ async def scout_moments(
             if roles.get(speaker) == "host" and payoff_text.endswith("?"):
                 m["score"] = max(0, m["score"] - 35)
 
-    merged.sort(key=lambda m: m["score"], reverse=True)
-    del merged[TOP_K:]
+    # Preserve timeline coverage instead of letting one strong section
+    # monopolize the entire candidate pool.
+    chunk_buckets: list[list[dict[str, Any]]] = [[] for _ in chunks]
+
+    for m in merged:
+        lo = int(m.get("lo") or 0)
+
+        for chunk_index, (chunk_lo, chunk_hi) in enumerate(chunks):
+            if chunk_lo <= lo <= chunk_hi:
+                chunk_buckets[chunk_index].append(m)
+                break
+
+    for bucket in chunk_buckets:
+        bucket.sort(key=lambda m: m["score"], reverse=True)
+
+    coverage_selected: list[dict[str, Any]] = []
+    depth = 0
+
+    while len(coverage_selected) < TOP_K:
+        added = False
+
+        for bucket in chunk_buckets:
+            if depth < len(bucket):
+                coverage_selected.append(bucket[depth])
+                added = True
+
+                if len(coverage_selected) >= TOP_K:
+                    break
+
+        if not added:
+            break
+
+        depth += 1
+
+    merged = coverage_selected
+
     for cid, m in enumerate(merged):
         m["candidate_id"] = cid
         m["start"] = sentences[m["lo"]]["start"]

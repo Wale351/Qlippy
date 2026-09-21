@@ -9,7 +9,26 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const { model_size = "large" } = await req.json().catch(() => ({}));
+  const body = await req.json().catch(() => ({}));
+  const model_size = body?.model_size ?? "large";
+
+  const rawClipDuration = body?.clip_duration_seconds;
+  const clipDurationSeconds =
+    rawClipDuration === null ||
+    rawClipDuration === undefined ||
+    rawClipDuration === ""
+      ? null
+      : Number(rawClipDuration);
+
+  if (
+    clipDurationSeconds !== null &&
+    ![15, 30, 60, 90].includes(clipDurationSeconds)
+  ) {
+    return NextResponse.json(
+      { error: "Invalid clip duration" },
+      { status: 400 }
+    );
+  }
 
   const db = createAdminClient();
 
@@ -47,6 +66,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         youtube_url: video.youtube_url,
         model_size,
         reprocess:   true,
+        clip_duration_seconds: clipDurationSeconds,
       },
     })
     .select()

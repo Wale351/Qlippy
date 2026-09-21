@@ -55,13 +55,21 @@ async def _chain_identify_clips(transcribe_job: dict, video_id: str) -> None:
     user_id = transcribe_job["user_id"]
     profile = get_user_profile(user_id)
 
+    selected_clip_duration = (
+        (transcribe_job.get("payload") or {}).get("clip_duration_seconds")
+    )
+
     preferences: dict = {
         "min_duration_seconds": (profile or {}).get("clip_duration_min") or 30,
         "max_duration_seconds": (profile or {}).get("clip_duration_max") or 90,
         "max_clips": 10,
         "target_tones": (profile or {}).get("preferred_tones") or ["educational", "entertaining", "hook", "emotional", "cta"],
     }
-    job_payload: dict = {"video_id": video_id, "preferences": preferences}
+    job_payload: dict = {
+        "video_id": video_id,
+        "preferences": preferences,
+        "clip_duration_seconds": selected_clip_duration,
+    }
 
     if profile and (profile.get("niche") or profile.get("audience")):
         job_payload["niche_profile"] = {

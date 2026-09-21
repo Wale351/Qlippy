@@ -61,6 +61,14 @@ async def handle_identify_clips(job: dict) -> None:
     video_id      = payload["video_id"]
     preferences   = payload.get("preferences", {})
     niche_profile = payload.get("niche_profile")  # Stage 2: audience config
+
+    raw_clip_duration = payload.get("clip_duration_seconds")
+    clip_duration_seconds = (
+        int(raw_clip_duration)
+        if raw_clip_duration in (15, 30, 60, 90)
+        else None
+    )
+
     keep_existing = bool(payload.get("keep_existing"))  # keep old clips as a previous generation
     job_id        = job["id"]
     t0            = time.monotonic()
@@ -75,6 +83,12 @@ async def handle_identify_clips(job: dict) -> None:
         raw_words = transcript["raw_words"]
         video     = get_video(video_id)
         audio_url = public_url(video["audio_r2_key"]) if video.get("audio_r2_key") else None
+
+        log.info(
+            "Moment generation settings: video=%.1f min, clip_duration=%s",
+            float(video.get("duration_sec") or 0) / 60.0,
+            f"{clip_duration_seconds}s" if clip_duration_seconds else "auto",
+        )
 
         # Merge niche profile into preferences if provided
         if niche_profile:
@@ -229,35 +243,45 @@ async def handle_identify_clips(job: dict) -> None:
             c["quality_score"] = score
             filtered_candidates.append(c)
 
-        filtered_candidates.sort(
-            key=lambda c: (
-                int(c.get("quality_score") or 0),
-                int(c.get("score") or 0),
-            ),
-            reverse=True,
-        )
+        # Scout already returns candidates in a coverage-aware timeline order.
+        # Keep enough material for long videos instead of collapsing everything
+        # back to a tiny global top-7 list.
+        video_minutes = float(video.get("duration_sec") or 0) / 60.0
 
-        # Keep a compact set of the best ingredients for Crafter.
-        # Never starve the pipeline if Scout only found a few.
-        keep_n = min(len(filtered_candidates), 7)
-        if keep_n >= 4:
-            candidates = filtered_candidates[:keep_n]
+        if video_minutes <= 10:
+            candidate_budget = 6
+        elif video_minutes <= 20:
+            candidate_budget = 10
+        elif video_minutes <= 30:
+            candidate_budget = 12
+        elif video_minutes <= 60:
+            candidate_budget = 18
         else:
-            candidates = filtered_candidates
+            candidate_budget = 24
+
+        candidates = filtered_candidates[:candidate_budget]
 
         log.info(
-            "Quality filter: kept %d of %d Scout candidates",
+            "Quality filter: kept %d of %d Scout candidates across %.1f min",
             len(candidates),
             len(filtered_candidates),
+            video_minutes,
         )
 
         # Stage 2 — Clip Crafter: exact boundaries in play order (hook
         # transplant may put the payoff cut first), checklist, duration gate
         update_video(video_id, processing_stage="crafting_scenes")
+        if clip_duration_seconds:
+            craft_min_duration = max(6, clip_duration_seconds * 0.8)
+            craft_max_duration = min(120, clip_duration_seconds * 1.2)
+        else:
+            craft_min_duration = 6
+            craft_max_duration = preferences.get("max_duration_seconds") or 90
+
         crafted = await craft_clips(
             candidates, sentences, feats, roles,
-            min_duration_s=6,
-            max_duration_s=preferences.get("max_duration_seconds") or 90,
+            min_duration_s=craft_min_duration,
+            max_duration_s=craft_max_duration,
         )
 
         # Stage 3 — Moment Builder: group related scenes into complete Moments
@@ -266,6 +290,7 @@ async def handle_identify_clips(job: dict) -> None:
             crafted,
             video_duration_sec=video.get("duration_sec"),
             sentences=sentences,
+            target_duration_sec=clip_duration_seconds,
         )
 
         # Stage 4 — Rank the finished Moments

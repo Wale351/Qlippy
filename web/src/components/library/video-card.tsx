@@ -58,6 +58,8 @@ export function VideoCard({ video, collections, onDeleted, onMoved }: Props) {
   const [showMove,             setShowMove]             = useState(false);
   const [reprocessing,         setReprocessing]         = useState(false);
   const [showReprocessConfirm, setShowReprocessConfirm] = useState(false);
+  const [reprocessClipDuration, setReprocessClipDuration] =
+    useState<"auto" | 15 | 30 | 60 | 90>("auto");
   const [showDeleteConfirm,    setShowDeleteConfirm]    = useState(false);
 
   // Progress tracking
@@ -111,8 +113,20 @@ export function VideoCard({ video, collections, onDeleted, onMoved }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
           video.has_transcript
-            ? { keep_existing: false }
-            : { model_size: "large" }
+            ? {
+                keep_existing: false,
+                clip_duration_seconds:
+                  reprocessClipDuration === "auto"
+                    ? null
+                    : reprocessClipDuration,
+              }
+            : {
+                model_size: "large",
+                clip_duration_seconds:
+                  reprocessClipDuration === "auto"
+                    ? null
+                    : reprocessClipDuration,
+              }
         ),
       });
       onDeleted();
@@ -295,8 +309,50 @@ export function VideoCard({ video, collections, onDeleted, onMoved }: Props) {
             Re-analyse video?
           </h3>
           <p className="text-sm" style={{ color: "var(--yt-text-2)" }}>
-            The existing transcript and all clips will be deleted and analysis will re-run from scratch.
+            Existing clips will be replaced. Qlippy will reuse the transcript when available.
           </p>
+
+          <div className="flex flex-col gap-2">
+            <span
+              className="text-xs font-medium"
+              style={{ color: "var(--yt-text-2)" }}
+            >
+              Clip duration
+            </span>
+
+            <div className="grid grid-cols-5 gap-1.5">
+              {(["auto", 15, 30, 60, 90] as const).map((duration) => {
+                const active = reprocessClipDuration === duration;
+
+                return (
+                  <button
+                    key={duration}
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setReprocessClipDuration(duration);
+                    }}
+                    className="rounded-lg px-2 py-2 text-xs font-medium transition-colors"
+                    style={{
+                      background: active
+                        ? "var(--yt-red)"
+                        : "var(--yt-bg)",
+                      color: active
+                        ? "#fff"
+                        : "var(--yt-text-2)",
+                      border: active
+                        ? "1px solid var(--yt-red)"
+                        : "1px solid var(--yt-border)",
+                    }}
+                  >
+                    {duration === "auto" ? "Auto" : `${duration}s`}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           <div className="flex gap-3 justify-end">
             <button
               onClick={(e) => { e.preventDefault(); e.stopPropagation(); setShowReprocessConfirm(false); }}

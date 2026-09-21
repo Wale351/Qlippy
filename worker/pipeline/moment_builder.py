@@ -50,14 +50,16 @@ A Moment should:
 - prefer guest/personality material over generic interviewer setup
 - preserve interviewer questions only when they are genuinely necessary context
 
-The number of Moments depends on the material.
-Do NOT force a quota.
+The requested target range is important.
+Aim to return enough genuinely distinct Moments to reach that range when the
+source material supports it.
 
-For roughly:
-- 10 minutes of source: often 1-3 strong Moments
-- 20 minutes: often 2-5
-- 30 minutes: often 3-6
-but fewer is completely fine when the material does not support more.
+Do not collapse many different strong moments into only one or two outputs.
+Prefer broad source-timeline coverage: early, middle, and later sections should
+all contribute when they contain worthwhile material.
+
+Return fewer than the target minimum only when there genuinely are not enough
+coherent, non-duplicate moments in the supplied scenes.
 
 Each supplied scene has an integer id.
 
@@ -76,15 +78,53 @@ Output strict JSON only:
 """
 
 
-def _moment_limit(video_duration_sec: float | None) -> int:
-    """Loose upper bound only. The model is never required to fill it."""
+def _moment_target_range(
+    video_duration_sec: float | None,
+    target_duration_sec: float | None = None,
+) -> tuple[int, int]:
+    """Return a useful target range for unique Moments based on source length."""
     if not video_duration_sec:
-        return 3
+        return (2, 4)
 
     minutes = video_duration_sec / 60.0
 
-    # About 3 potential Moments per 10 minutes, capped for long videos.
-    return max(1, min(10, math.ceil(minutes / 10.0 * 3)))
+    if minutes <= 5:
+        low, high = 2, 3
+    elif minutes <= 10:
+        low, high = 3, 5
+    elif minutes <= 20:
+        low, high = 5, 7
+    elif minutes <= 30:
+        low, high = 7, 9
+    elif minutes <= 45:
+        low, high = 8, 10
+    elif minutes <= 60:
+        low, high = 9, 12
+    elif minutes <= 90:
+        low, high = 10, 14
+    else:
+        low, high = 12, 16
+
+    # Short requested clips can support slightly more distinct Moments.
+    # Long requested clips need more room for complete ideas.
+    if target_duration_sec and target_duration_sec <= 15:
+        high = min(16, high + 2)
+    elif target_duration_sec and target_duration_sec <= 30:
+        high = min(16, high + 1)
+    elif target_duration_sec and target_duration_sec >= 90:
+        low = max(2, low - 1)
+
+    return low, high
+
+
+def _moment_limit(
+    video_duration_sec: float | None,
+    target_duration_sec: float | None = None,
+) -> int:
+    return _moment_target_range(
+        video_duration_sec,
+        target_duration_sec,
+    )[1]
 
 
 def _format_scenes(scenes: list[dict[str, Any]]) -> str:
@@ -198,6 +238,8 @@ def _materialize_groups(
 def _expand_groups_to_min(
     groups: list[list[int]],
     sentences: list[dict[str, Any]],
+    target_min_s: float = TARGET_MIN_S,
+    target_max_s: float = TARGET_MAX_S,
 ) -> list[list[int]]:
     """
     Extend a grouped Moment into nearby transcript context when it is too short.
@@ -224,7 +266,13 @@ def _expand_groups_to_min(
         )
 
         if gap_seconds <= 5.0:
-            previous[1] = hi
+            candidate = [g[:] for g in bridged]
+            candidate[-1][1] = hi
+
+            if _groups_duration(candidate, sentences) <= target_max_s:
+                previous[1] = hi
+            else:
+                bridged.append([lo, hi])
         else:
             bridged.append([lo, hi])
 
@@ -255,11 +303,11 @@ def _expand_groups_to_min(
 
     duration = _groups_duration(groups, sentences)
 
-    if duration >= TARGET_MIN_S:
+    if duration >= target_min_s:
         return groups
 
     # Prefer extending the ending. This preserves the existing hook.
-    while duration < TARGET_MIN_S:
+    while duration < target_min_s:
         last_lo, last_hi = groups[-1]
 
         if last_hi >= len(sentences) - 1:
@@ -270,14 +318,14 @@ def _expand_groups_to_min(
 
         candidate_duration = _groups_duration(candidate, sentences)
 
-        if candidate_duration > TARGET_MAX_S:
+        if candidate_duration > target_max_s:
             break
 
         groups = candidate
         duration = candidate_duration
 
     # If the video/topic ends there, add limited context before the opening.
-    while duration < TARGET_MIN_S:
+    while duration < target_min_s:
         first_lo, first_hi = groups[0]
 
         if first_lo <= 0:
@@ -288,7 +336,7 @@ def _expand_groups_to_min(
 
         candidate_duration = _groups_duration(candidate, sentences)
 
-        if candidate_duration > TARGET_MAX_S:
+        if candidate_duration > target_max_s:
             break
 
         groups = candidate
@@ -353,6 +401,40 @@ def _repair_awkward_opening(
     return candidate
 
 
+def _trim_groups_to_max(
+    groups: list[list[int]],
+    sentences: list[dict[str, Any]],
+    target_max_s: float,
+) -> list[list[int]]:
+    """Trim a Moment at sentence boundaries so it cannot exceed its target max."""
+    groups = _normalise_groups(groups, sentences)
+
+    if not groups:
+        return groups
+
+    duration = _groups_duration(groups, sentences)
+
+    # Preserve the opening/hook where possible and trim excess from the end.
+    while duration > target_max_s:
+        lo, hi = groups[-1]
+
+        if hi <= lo:
+            break
+
+        candidate = [g[:] for g in groups]
+        candidate[-1][1] -= 1
+
+        candidate_duration = _groups_duration(candidate, sentences)
+
+        if candidate_duration <= 0:
+            break
+
+        groups = candidate
+        duration = candidate_duration
+
+    return groups
+
+
 def _build_moment(
     scene_ids: list[int],
     topic: str,
@@ -360,6 +442,7 @@ def _build_moment(
     why: str,
     scenes: list[dict[str, Any]],
     sentences: list[dict[str, Any]] | None = None,
+    target_duration_sec: float | None = None,
 ) -> dict[str, Any] | None:
     valid_ids = sorted(set(i for i in scene_ids if 0 <= i < len(scenes)))
 
@@ -389,15 +472,44 @@ def _build_moment(
             for c in cuts_raw
         )
 
+        if target_duration_sec:
+            target_min_s = max(6.0, target_duration_sec * 0.8)
+            target_max_s = min(ABSOLUTE_MAX_S, target_duration_sec * 1.2)
+        else:
+            target_min_s = TARGET_MIN_S
+            target_max_s = TARGET_MAX_S
+
         sentence_groups = _expand_groups_to_min(
             sentence_groups,
             sentences,
+            target_min_s=target_min_s,
+            target_max_s=target_max_s,
         )
 
         sentence_groups = _repair_awkward_opening(
             sentence_groups,
             sentences,
         )
+
+        # Opening repair or an already-long source scene can push the final
+        # Moment beyond the selected duration. Enforce the final ceiling here.
+        if target_duration_sec:
+            before_trim = _groups_duration(sentence_groups, sentences)
+
+            sentence_groups = _trim_groups_to_max(
+                sentence_groups,
+                sentences,
+                target_max_s,
+            )
+
+            after_trim = _groups_duration(sentence_groups, sentences)
+
+            if after_trim < before_trim - 0.1:
+                log.info(
+                    "Moment trimmed to target: %.1fs → %.1fs",
+                    before_trim,
+                    after_trim,
+                )
 
         cuts_raw, text = _materialize_groups(
             sentence_groups,
@@ -465,10 +577,200 @@ def _build_moment(
     }
 
 
+def _moment_timeline_bucket(
+    item: dict[str, Any],
+    video_duration_sec: float,
+    bucket_count: int,
+) -> int:
+    start = float(item.get("src_start") or 0)
+
+    cuts = item.get("cuts_raw") or []
+    if cuts:
+        try:
+            end = max(float(c.get("end") or start) for c in cuts)
+        except (TypeError, ValueError):
+            end = start + float(item.get("duration_sec") or 0)
+    else:
+        end = start + float(item.get("duration_sec") or 0)
+
+    midpoint = max(0.0, min(video_duration_sec, (start + end) / 2.0))
+    width = video_duration_sec / bucket_count
+
+    if width <= 0:
+        return 0
+
+    return min(bucket_count - 1, int(midpoint / width))
+
+
+def _scene_quality_key(scene: dict[str, Any]) -> tuple[int, int]:
+    return (
+        int(scene.get("score_total") or 0),
+        int(scene.get("scout_score") or 0),
+    )
+
+
+def _ensure_moment_coverage(
+    moments: list[dict[str, Any]],
+    scenes: list[dict[str, Any]],
+    video_duration_sec: float | None,
+    sentences: list[dict[str, Any]] | None,
+    target_min_moments: int,
+    target_max_moments: int,
+    target_duration_sec: float | None = None,
+) -> list[dict[str, Any]]:
+    """Recover strong unused scenes when model output is too sparse or clustered."""
+    if not video_duration_sec or video_duration_sec <= 0 or not scenes:
+        return moments
+
+    # Measure coverage across the whole source using equal timeline zones.
+    # Ten zones gives a useful early → middle → late spread without becoming
+    # impossible for long videos with a limited Moment budget.
+    bucket_count = max(
+        4,
+        min(10, math.ceil(video_duration_sec / 120.0)),
+    )
+    minimum_buckets = max(1, math.ceil(bucket_count * 0.5))
+    preferred_buckets = max(
+        minimum_buckets,
+        math.ceil(bucket_count * 0.75),
+    )
+
+    used_scene_ids = {
+        int(scene_id)
+        for moment in moments
+        for scene_id in (moment.get("scene_ids") or [])
+        if isinstance(scene_id, int)
+    }
+
+    covered_buckets = {
+        _moment_timeline_bucket(moment, video_duration_sec, bucket_count)
+        for moment in moments
+    }
+
+    # Coverage recovery should never manufacture weak Moments just to tick
+    # another timeline zone. Only recover scenes that survived as useful.
+    available: list[tuple[int, dict[str, Any]]] = [
+        (i, scene)
+        for i, scene in enumerate(scenes)
+        if i not in used_scene_ids
+        and str(scene.get("label") or "strong").lower() != "weak"
+    ]
+
+    # First priority: recover strong scenes from uncovered timeline sections.
+    while (
+        len(moments) < target_max_moments
+        and len(covered_buckets) < preferred_buckets
+        and available
+    ):
+        available_buckets = {
+            _moment_timeline_bucket(
+                scene,
+                video_duration_sec,
+                bucket_count,
+            )
+            for _, scene in available
+        }
+
+        uncovered = [
+            bucket
+            for bucket in available_buckets
+            if bucket not in covered_buckets
+        ]
+
+        if not uncovered:
+            break
+
+        # Pick the uncovered zone furthest from what we already have.
+        # This prevents five Moments from all landing in the first half.
+        if covered_buckets:
+            bucket = max(
+                uncovered,
+                key=lambda b: min(abs(b - c) for c in covered_buckets),
+            )
+        else:
+            bucket = uncovered[len(uncovered) // 2]
+
+        choices = [
+            (i, scene)
+            for i, scene in available
+            if _moment_timeline_bucket(
+                scene,
+                video_duration_sec,
+                bucket_count,
+            ) == bucket
+        ]
+
+        if not choices:
+            break
+
+        i, scene = max(
+            choices,
+            key=lambda pair: _scene_quality_key(pair[1]),
+        )
+
+        extra = _build_moment(
+            [i],
+            str(scene.get("topic") or scene.get("archetype") or "Moment"),
+            str(scene.get("text") or "")[:160],
+            "Strong unused scene recovered to improve source timeline coverage.",
+            scenes,
+            sentences,
+            target_duration_sec,
+        )
+
+        if extra:
+            moments.append(extra)
+            used_scene_ids.add(i)
+            covered_buckets.add(bucket)
+
+        available = [(j, s) for j, s in available if j != i]
+
+    # Second priority: if the model still returned too few Moments,
+    # promote the strongest remaining unique scenes.
+    while len(moments) < target_min_moments and available:
+        i, scene = max(
+            available,
+            key=lambda pair: _scene_quality_key(pair[1]),
+        )
+
+        available = [(j, s) for j, s in available if j != i]
+
+        extra = _build_moment(
+            [i],
+            str(scene.get("topic") or scene.get("archetype") or "Moment"),
+            str(scene.get("text") or "")[:160],
+            "Strong unused scene recovered to reach the source-length Moment target.",
+            scenes,
+            sentences,
+            target_duration_sec,
+        )
+
+        if extra:
+            moments.append(extra)
+            used_scene_ids.add(i)
+
+    coverage_pct = (
+        len(covered_buckets) / bucket_count * 100.0
+        if bucket_count
+        else 0.0
+    )
+
+    log.info(
+        "Moment coverage: %d/%d timeline zones (%.0f%%), %d Moments — target 75%%, floor 50%%",
+        len(covered_buckets),
+        bucket_count,
+        coverage_pct,
+        len(moments),
+    )
+
+    return moments[:target_max_moments]
+
+
 async def build_moments(
     scenes: list[dict[str, Any]],
     video_duration_sec: float | None = None,
     sentences: list[dict[str, Any]] | None = None,
+    target_duration_sec: float | None = None,
 ) -> list[dict[str, Any]]:
     if not scenes:
         return []
@@ -482,15 +784,34 @@ async def build_moments(
             "Single strong scene.",
             scenes,
             sentences,
+            target_duration_sec,
         )
         return [one] if one else []
 
-    max_moments = _moment_limit(video_duration_sec)
+    target_min_moments, target_max_moments = _moment_target_range(
+        video_duration_sec,
+        target_duration_sec,
+    )
+    max_moments = target_max_moments
+
+    duration_instruction = (
+        f"Target finished Moment duration: about {target_duration_sec:.0f} seconds. "
+        f"Aim to stay roughly within {target_duration_sec * 0.8:.0f}-"
+        f"{target_duration_sec * 1.2:.0f} seconds when the material allows. "
+        "Do not combine separate good moments merely to make a longer clip.\n"
+        if target_duration_sec
+        else ""
+    )
 
     user = (
         f"Source video duration: "
         f"{(video_duration_sec or 0) / 60:.1f} minutes\n"
-        f"Maximum useful Moments: {max_moments}\n\n"
+        f"Target useful Moments: {target_min_moments}-{target_max_moments}\n"
+        f"Maximum useful Moments: {max_moments}\n"
+        f"Spread the Moments across the source timeline instead of clustering them "
+        f"inside one short section. Each Moment must cover a genuinely different "
+        f"topic, story, argument, insight, joke, or emotional beat.\n"
+        f"{duration_instruction}\n"
         f"Scenes:\n\n{_format_scenes(scenes)}"
     )
 
@@ -500,7 +821,7 @@ async def build_moments(
             SYSTEM_PROMPT,
             user,
             temperature=0.2,
-            max_tokens=2048,
+            max_tokens=4096,
         )
     except Exception as exc:
         log.warning("Moment Builder failed: %s", exc)
@@ -532,6 +853,7 @@ async def build_moments(
             str(raw.get("why") or ""),
             scenes,
             sentences,
+            target_duration_sec,
         )
 
         if moment is None:
@@ -543,7 +865,17 @@ async def build_moments(
     # Never let a flaky local-model response erase every valid scene.
     if not moments:
         log.warning("Moment Builder returned no usable Moments; keeping scenes")
-        return scenes
+        moments = scenes[:target_max_moments]
+
+    moments = _ensure_moment_coverage(
+        moments,
+        scenes,
+        video_duration_sec,
+        sentences,
+        target_min_moments,
+        target_max_moments,
+        target_duration_sec,
+    )
 
     log.info(
         "Moment Builder: %d scenes → %d Moments (%s)",

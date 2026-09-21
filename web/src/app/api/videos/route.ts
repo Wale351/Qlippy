@@ -14,6 +14,24 @@ export async function POST(req: NextRequest) {
     resolution = 720,
   } = body;
 
+  const rawClipDuration = body.clip_duration_seconds;
+  const clipDurationSeconds =
+    rawClipDuration === null ||
+    rawClipDuration === undefined ||
+    rawClipDuration === ""
+      ? null
+      : Number(rawClipDuration);
+
+  if (
+    clipDurationSeconds !== null &&
+    ![15, 30, 60, 90].includes(clipDurationSeconds)
+  ) {
+    return NextResponse.json(
+      { error: "Invalid clip duration" },
+      { status: 400 },
+    );
+  }
+
   // URL imports and direct file uploads share the same processing pipeline.
   const sourceUrl = String(
     body.video_url || body.source_url || body.youtube_url || ""
@@ -145,6 +163,7 @@ export async function POST(req: NextRequest) {
 
         model_size:  model_size,
         resolution:  Number(resolution) || 720,
+        clip_duration_seconds: clipDurationSeconds,
       },
     })
     .select()

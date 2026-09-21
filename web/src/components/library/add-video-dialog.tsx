@@ -84,6 +84,8 @@ export function AddVideoDialog({ onAdded }: Props) {
   const [inspectData, setInspectData] = useState<InspectData | null>(null);
   const [inspecting, setInspecting] = useState(false);
   const [resolution, setResolution] = useState(720);
+  const [clipDuration, setClipDuration] =
+    useState<"auto" | 15 | 30 | 60 | 90>("auto");
 
   const [collections, setCollections]           = useState<Collection[]>([]);
   const [collectionId, setCollectionId]         = useState("");
@@ -110,6 +112,7 @@ export function AddVideoDialog({ onAdded }: Props) {
     setInspectData(null);
     setInspecting(false);
     setResolution(720);
+    setClipDuration("auto");
     setCollectionId("");
     setSelectedCollName("");
     setCollSearch("");
@@ -219,6 +222,8 @@ export function AddVideoDialog({ onAdded }: Props) {
             source_id: initData.r2_key,
             title,
             model_size: "large",
+            clip_duration_seconds:
+              clipDuration === "auto" ? null : clipDuration,
             collection_id: collectionId || null,
           }),
         });
@@ -295,6 +300,8 @@ export function AddVideoDialog({ onAdded }: Props) {
           channel_name: inspectData.channel_name,
           duration: inspectData.duration,
           model_size: "large",
+          clip_duration_seconds:
+            clipDuration === "auto" ? null : clipDuration,
           collection_id: collectionId || null,
           resolution,
         }),
@@ -388,6 +395,46 @@ export function AddVideoDialog({ onAdded }: Props) {
             >
               Upload file
             </button>
+          </div>
+
+          <div>
+            <p
+              className="text-sm mb-2"
+              style={{ color: "var(--yt-text-2)" }}
+            >
+              Clip duration
+            </p>
+
+            <div className="grid grid-cols-5 gap-1.5">
+              {(["auto", 15, 30, 60, 90] as const).map((duration) => (
+                <button
+                  key={duration}
+                  type="button"
+                  onClick={() => setClipDuration(duration)}
+                  className="rounded-lg px-2 py-2 text-xs font-medium transition-colors"
+                  style={{
+                    background:
+                      clipDuration === duration
+                        ? "var(--yt-red)"
+                        : "var(--yt-surface-2)",
+                    color:
+                      clipDuration === duration
+                        ? "white"
+                        : "var(--yt-text-2)",
+                    border: "1px solid var(--yt-border)",
+                  }}
+                >
+                  {duration === "auto" ? "Auto" : `${duration}s`}
+                </button>
+              ))}
+            </div>
+
+            <p
+              className="mt-1.5 text-xs"
+              style={{ color: "var(--yt-text-2)", opacity: 0.7 }}
+            >
+              Qlippy will aim for Moments around this length.
+            </p>
           </div>
 
           {mode === "url" ? (
